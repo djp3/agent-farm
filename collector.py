@@ -104,8 +104,51 @@ _git_cache: dict[str, tuple[float, dict, float]] = {}
 _git_debounce = _Debounce(every_s=900)
 
 
+# Helper programs by absolute path, so nothing is resolved through a PATH entry that a
+# user-level process could write to. git is the exception by design: Homebrew's build is
+# preferred (located by asking brew for its prefix), then Apple's, which exists on every
+# Mac but is only a stub that pops up the developer-tools installer unless the command
+# line tools are present, so it is used only when xcode-select confirms they are.
+PS = "/bin/ps"
+OPEN = "/usr/bin/open"
+XCODE_SELECT = "/usr/bin/xcode-select"
+APPLE_GIT = "/usr/bin/git"
+BREW_CANDIDATES = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")   # Apple silicon, Intel
+GIT_INSTALL_HINT = "run  xcode-select --install  for Apple's git, or  brew install git  for Homebrew's"
+_git_path: Optional[str] = None          # resolved once; "" means no usable git
+
+
+def _run_quiet(cmd: list[str], timeout: float = 5) -> str:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def find_git() -> str:
+    """Homebrew's git, else Apple's when the developer tools are installed, else ''."""
+    for brew in BREW_CANDIDATES:
+        if os.path.exists(brew):
+            prefix = _run_quiet([brew, "--prefix"])
+            cand = os.path.join(prefix, "bin", "git") if prefix else ""
+            if cand and os.access(cand, os.X_OK):
+                return cand
+    if _run_quiet([XCODE_SELECT, "-p"]) and os.access(APPLE_GIT, os.X_OK):
+        return APPLE_GIT
+    return ""
+
+
+def git_path() -> str:
+    global _git_path
+    if _git_path is None:
+        _git_path = find_git()
+        log.info("git: %s", _git_path or "not found")
+    return _git_path
+
+
 def _git(cwd: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=2)
+    r = subprocess.run([git_path(), "-C", cwd, *args], capture_output=True, text=True, timeout=2)
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
@@ -120,6 +163,9 @@ def git_info(cwd: str) -> dict:
         return hit[1]
     info: dict = {}
     ttl = GIT_TTL_S
+    if not git_path():                    # nothing to run; the detail pane says what to install
+        _git_cache[cwd] = (now, {"error": "no git"}, GIT_NO_ACCESS_TTL_S)
+        return _git_cache[cwd][1]
     try:
         root = _git(cwd, "rev-parse", "--show-toplevel")
         if root:
@@ -641,7 +687,7 @@ class ITerm2Map:
         AppleScript `activate` this needs no Automation permission, which matters once the
         monitor runs as its own app rather than inside iTerm2."""
         try:
-            r = subprocess.run(["open", "-b", bundle_id], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([OPEN, "-b", bundle_id], capture_output=True, text=True, timeout=5)
         except Exception as e:
             log.exception("focus %s: open -b %s failed to run", label, bundle_id)
             return False, repr(e)
@@ -732,7 +778,7 @@ class Collector:
             return {}
         try:
             out = subprocess.run(
-                ["ps", "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
+                [PS, "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
                 capture_output=True, text=True, timeout=2,
             ).stdout
         except Exception as e:

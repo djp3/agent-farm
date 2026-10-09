@@ -122,10 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     private func childEnvironment() -> [String] {
         // TERM, COLORTERM=truecolor (Textual needs it for 24-bit color), LANG, HOME, USER...
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color", trueColor: true)
-        // Finder launches apps with a bare PATH; the monitor shells out to it2, ps, git and osascript.
-        let inherited = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/Applications/iTerm.app/Contents/Resources/utilities"]
-        env.append("PATH=" + (extra + [inherited]).joined(separator: ":"))
+        // The monitor runs it2, ps, open and git by absolute path (git is located through
+        // brew or xcode-select), so the child only needs the PATH it was launched with.
+        env.append("PATH=" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
         env.append("TERM_PROGRAM=agent-farm")
         if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
             env.append("AGENT_FARM_VERSION=\(v)")

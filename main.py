@@ -29,7 +29,7 @@ from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Stati
                              Tree)
 from textual.widgets.tree import TreeNode
 
-from collector import (Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
+from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
                        setup_logging)
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
@@ -355,7 +355,9 @@ def detail_text(obj, now: float, ordering: Ordering | None = None) -> Text:
         if i.is_app:
             kv("where", "Claude desktop app  (f brings the app forward)", "cyan")
         kv("cwd", i.cwd or "(unknown)")
-        if i.git and i.git.get("error"):
+        if i.git and i.git.get("error") == "no git":
+            kv("git", f"git not found: {GIT_INSTALL_HINT}", "yellow")
+        elif i.git and i.git.get("error"):
             kv("git", "folder not readable yet: allow agent-farm under System Settings > "
                       "Privacy & Security > Files and Folders", "yellow")
         elif i.git:
