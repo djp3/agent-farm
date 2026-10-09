@@ -68,8 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     }
 
     private func setupUpdater() {
-        // Only from a real bundle with a feed URL; `swift run` during development has neither.
-        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
+        guard !isDevelopmentRun else { return }
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     }
 
@@ -103,9 +102,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     // MARK: - the Python core
 
+    /// True for `swift run` during development; the assembled bundle carries an Info.plist
+    /// with a Sparkle feed, a release build never runs without one.
+    private var isDevelopmentRun: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil
+    }
+
     private func coreExecutable() -> String? {
         // AGENT_FARM_CORE lets a `swift run` during development point at any executable.
-        if let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"], !p.isEmpty { return p }
+        // A release build ignores it: the environment must not choose what the signed app runs.
+        if isDevelopmentRun, let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"], !p.isEmpty {
+            return p
+        }
         guard let res = Bundle.main.resourceURL else { return nil }
         let p = res.appendingPathComponent("agent-farm-core/agent-farm-core").path
         return FileManager.default.isExecutableFile(atPath: p) ? p : nil
