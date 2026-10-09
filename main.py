@@ -1,5 +1,5 @@
 """
-Claude Monitor — a Textual TUI that watches every Claude Code instance on this Mac.
+agent-farm — a Textual TUI that watches every Claude Code instance on this Mac.
 
 Head agents are top-level rows; subagents / teammates nest beneath them.
 Head agents are the tree rows; the detail pane for the highlighted row sits underneath,
@@ -575,7 +575,7 @@ class SettingsScreen(Screen):
 
 
 class ClaudeMonitor(App):
-    TITLE = "Claude Monitor"
+    TITLE = "agent-farm"
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }

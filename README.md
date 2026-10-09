@@ -1,4 +1,4 @@
-# Claude Monitor
+# agent-farm
 
 A read-only Textual TUI that shows every Claude Code instance running on this Mac,
 what each one is doing, whether it is busy / idle / waiting, and any subagents or
