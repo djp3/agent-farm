@@ -26,6 +26,8 @@ tab-focus key.
 
 ## The window
 
+![agent-farm showing a fleet of Claude Code sessions, the usage panel and the detail pane](docs/screenshot.png)
+
 From top to bottom:
 
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
