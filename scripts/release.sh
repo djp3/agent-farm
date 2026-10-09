@@ -81,7 +81,7 @@ grep -q "sparkle:edSignature" dist/appcast/appcast.xml || die "appcast.xml carri
 step "publish $TAG"
 git push origin HEAD                      # the release must be reproducible from the repo
 git tag -a "$TAG" -m "agent-farm $VERSION"
-git push origin "$TAG"
+git push origin "$TAG" || { sleep 5; git push origin "$TAG"; }   # GitHub occasionally rejects a fresh tag once
 gh release create "$TAG" --repo "$REPO" --title "agent-farm $VERSION" --generate-notes \
     "$ZIP" dist/appcast/appcast.xml
 echo
