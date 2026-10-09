@@ -862,19 +862,8 @@ class Collector:
             instances[pid] = inst
 
         # Claude processes not in the registry (older builds, odd entrypoints).
-        if psutil is not None:
-            for p in psutil.process_iter(["pid", "name", "cmdline", "create_time", "cwd"]):
-                try:
-                    if p.info["name"] != "claude" or p.info["pid"] in instances:
-                        continue
-                    cmd = p.info["cmdline"] or []
-                    inst = Instance(pid=p.info["pid"], kind="unregistered",
-                                    started_at=p.info["create_time"], cwd=p.info["cwd"] or "")
-                    if "-n" in cmd:
-                        inst.name = cmd[cmd.index("-n") + 1] if cmd.index("-n") + 1 < len(cmd) else ""
-                    instances[inst.pid] = inst
-                except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
-                    continue
+        for inst in self._unregistered(set(instances)):
+            instances[inst.pid] = inst
 
         ttys = self._ttys_for([i.pid for i in instances.values() if i.alive])
         for inst in instances.values():
@@ -894,6 +883,34 @@ class Collector:
         if inst.is_app:
             return self.iterm.focus_app(label)
         return self.iterm.focus(inst.iterm_session, label)
+
+    @staticmethod
+    def _unregistered(known: set[int]) -> list[Instance]:
+        """`claude` processes with no registry entry. Only the name is read for every
+        process; command line and cwd are read per claude process, each under its own
+        guard, because macOS refuses the command line of some system processes with a
+        plain PermissionError that psutil does not translate. A failure here costs at
+        most this supplement, never the registered sessions."""
+        if psutil is None:
+            return []
+        found: list[Instance] = []
+        try:
+            for p in psutil.process_iter(["pid", "name"]):
+                if p.info["name"] != "claude" or p.info["pid"] in known:
+                    continue
+                try:
+                    cmd = p.cmdline() or []
+                    inst = Instance(pid=p.info["pid"], kind="unregistered",
+                                    started_at=p.create_time(), cwd=p.cwd() or "")
+                    if "-n" in cmd and cmd.index("-n") + 1 < len(cmd):
+                        inst.name = cmd[cmd.index("-n") + 1]
+                    found.append(inst)
+                except Exception:                # gone, unreadable, odd argv: skip this one
+                    continue
+        except Exception as e:
+            if _debounce.ok("psutil-scan"):
+                log.warning("process scan failed: %r", e)
+        return found
 
     def _fill_instance(self, inst: Instance, ttys: dict[int, str], now: float) -> None:
         if inst.alive:
