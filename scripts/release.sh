@@ -79,6 +79,7 @@ cp "$ZIP" dist/appcast/
 grep -q "sparkle:edSignature" dist/appcast/appcast.xml || die "appcast.xml carries no EdDSA signature"
 
 step "publish $TAG"
+git push origin HEAD                      # the release must be reproducible from the repo
 git tag -a "$TAG" -m "agent-farm $VERSION"
 git push origin "$TAG"
 gh release create "$TAG" --repo "$REPO" --title "agent-farm $VERSION" --generate-notes \

@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from pathlib import Path
+
+from apppaths import log_dir
 from typing import Optional
 
 try:
@@ -36,7 +38,9 @@ SESSIONS_DIR = CLAUDE_DIR / "sessions"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 TEAMS_DIR = CLAUDE_DIR / "teams"
 IT2 = "/Applications/iTerm.app/Contents/Resources/utilities/it2"
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+ITERM_BUNDLE_ID = "com.googlecode.iterm2"
+CLAUDE_APP_BUNDLE_ID = "com.anthropic.claudefordesktop"
+LOG_DIR = log_dir()  # logs/ next to the code, or ~/Library/Logs/agent-farm in the app
 
 log = logging.getLogger("monitor.collector")
 
@@ -63,7 +67,7 @@ class ErrorCounter(logging.Handler):
 
 def setup_logging(filename: str = "monitor.log", level: int = logging.INFO) -> Path:
     """Send everything under the 'monitor' logger to logs/<filename> (rotating, 1 MB x 3)."""
-    LOG_DIR.mkdir(exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     path = LOG_DIR / filename
     root = logging.getLogger("monitor")
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
@@ -93,7 +97,11 @@ _debounce = _Debounce()
 
 # ---- git repo lookup, cached per folder ------------------------------------ #
 GIT_TTL_S = 60.0
-_git_cache: dict[str, tuple[float, dict]] = {}
+# A folder git cannot read yet (macOS holds the call while it asks the user for Files and
+# Folders access, so it times out) is retried rarely and mentioned in the log rarely.
+GIT_NO_ACCESS_TTL_S = 300.0
+_git_cache: dict[str, tuple[float, dict, float]] = {}
+_git_debounce = _Debounce(every_s=900)
 
 
 def _git(cwd: str, *args: str) -> str:
@@ -108,9 +116,10 @@ def git_info(cwd: str) -> dict:
         return {}
     now = time.time()
     hit = _git_cache.get(cwd)
-    if hit and now - hit[0] < GIT_TTL_S:
+    if hit and now - hit[0] < hit[2]:
         return hit[1]
     info: dict = {}
+    ttl = GIT_TTL_S
     try:
         root = _git(cwd, "rev-parse", "--show-toplevel")
         if root:
@@ -133,10 +142,15 @@ def git_info(cwd: str) -> dict:
                 "main_root": main_root,
                 "claude_worktree": worktree and "/.claude/worktrees/" in root + "/",
             }
+    except subprocess.TimeoutExpired:
+        info, ttl = {"error": "no access"}, GIT_NO_ACCESS_TTL_S
+        if _git_debounce.ok(("git-access", cwd)):
+            log.warning("git lookup timed out in %s: macOS is probably waiting for agent-farm to be "
+                        "allowed under System Settings > Privacy & Security > Files and Folders", cwd)
     except Exception as e:
         if _debounce.ok(("git", cwd)):
             log.warning("git lookup failed in %s: %r", cwd, e)
-    _git_cache[cwd] = (now, info)
+    _git_cache[cwd] = (now, info, ttl)
     return info
 
 # How long a subagent transcript may sit unchanged and still count as running.
@@ -582,21 +596,27 @@ class ITerm2Map:
         return self.by_tty.get(tty, {})
 
     @staticmethod
-    def focus_app(label: str = "") -> tuple[bool, str]:
-        """Bring the Claude desktop app to the front (sessions that run inside it have no
-        terminal to focus). The app exposes no way to select a particular conversation."""
+    @staticmethod
+    def activate(bundle_id: str, label: str = "") -> tuple[bool, str]:
+        """Bring an application to the front through Launch Services (`open -b`). Unlike an
+        AppleScript `activate` this needs no Automation permission, which matters once the
+        monitor runs as its own app rather than inside iTerm2."""
         try:
-            r = subprocess.run(["osascript", "-e", 'tell application id "com.anthropic.claudefordesktop" to activate'],
-                               capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["open", "-b", bundle_id], capture_output=True, text=True, timeout=5)
         except Exception as e:
-            log.exception("focus %s: activating Claude.app failed to run", label)
+            log.exception("focus %s: open -b %s failed to run", label, bundle_id)
             return False, repr(e)
         if r.returncode == 0:
-            log.info("focus %s: activated the Claude desktop app", label)
+            log.info("focus %s: activated %s", label, bundle_id)
             return True, ""
         msg = (r.stderr or r.stdout).strip()[:300]
-        log.warning("focus %s: activate Claude.app rc=%d :: %s", label, r.returncode, msg)
-        return False, msg or f"osascript exited {r.returncode}"
+        log.warning("focus %s: open -b %s rc=%d :: %s", label, bundle_id, r.returncode, msg)
+        return False, msg or f"open exited {r.returncode}"
+
+    def focus_app(self, label: str = "") -> tuple[bool, str]:
+        """Bring the Claude desktop app to the front (sessions that run inside it have no
+        terminal to focus). The app exposes no way to select a particular conversation."""
+        return self.activate(CLAUDE_APP_BUNDLE_ID, label)
 
     def focus(self, session_id: str, label: str = "") -> tuple[bool, str]:
         """Bring an iTerm2 session to the front. `it2 session focus <session-id>` is positional."""
@@ -614,7 +634,10 @@ class ITerm2Map:
             return False, repr(e)
         if r.returncode == 0:
             log.info("focus %s: ok (session %s)", label, session_id)
-            return True, ""
+            # `it2 session focus` selects the tab and window inside iTerm2 but cannot bring
+            # iTerm2 in front of another app; from a terminal that never showed because
+            # iTerm2 was already frontmost. Activate it explicitly.
+            return self.activate(ITERM_BUNDLE_ID, label)
         msg = (r.stderr or r.stdout).strip()[:300]
         log.warning("focus %s: rc=%d cmd=%s :: %s", label, r.returncode, " ".join(cmd), msg)
         return False, msg or f"it2 exited {r.returncode}"

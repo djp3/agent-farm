@@ -1,5 +1,6 @@
 """
-User settings for the monitor, persisted as JSON next to the code
+User settings for the monitor, persisted as JSON next to the code, or under
+~/Library/Application Support/agent-farm when running as the bundled Mac app
 (override the path with CLAUDE_MONITOR_SETTINGS). Command-line flags win for one run
 but are not written back. Add a setting by adding a field with a default; unknown or
 malformed keys in the file are ignored so an old file never breaks startup.
@@ -12,9 +13,11 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from apppaths import data_dir
+
 log = logging.getLogger("monitor.settings")
 
-DEFAULT_PATH = Path(__file__).resolve().parent / "monitor_settings.json"
+DEFAULT_PATH = data_dir() / "monitor_settings.json"
 
 
 @dataclass
@@ -50,6 +53,7 @@ class Settings:
     def save(self) -> None:
         p = self.path()
         try:
+            p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_text(json.dumps(asdict(self), indent=2) + "\n")
             os.replace(tmp, p)

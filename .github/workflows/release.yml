@@ -1,0 +1,76 @@
+# Cuts a release from GitHub's own macOS runner: the same scripts/release.sh a
+# developer runs locally, with the signing material coming from repository secrets.
+# Trigger it from the Actions tab (Run workflow) after bumping VERSION on main.
+#
+# Secrets:
+#   DEVELOPER_ID_P12           base64 of a .p12 export of the "Developer ID Application" certificate
+#   DEVELOPER_ID_P12_PASSWORD  its password
+#   NOTARY_KEY_ID              App Store Connect API key id        (xcrun notarytool --key-id)
+#   NOTARY_ISSUER_ID           App Store Connect issuer id         (xcrun notarytool --issuer)
+#   NOTARY_KEY_P8              contents of the AuthKey_<id>.p8 file
+#   SPARKLE_PRIVATE_KEY        output of: .sparkle-tools/<ver>/bin/generate_keys --account agent-farm -x -
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select the newest Xcode on the runner
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          swift --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Python dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r requirements.txt -r requirements-build.txt
+
+      - name: Import the Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Write the notarization and Sparkle keys
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed25519"
+
+      - name: Build, notarize and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_FILE: ${{ runner.temp }}/notary.p8
+          SPARKLE_PRIVATE_KEY_FILE: ${{ runner.temp }}/sparkle_ed25519
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          scripts/release.sh

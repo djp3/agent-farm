@@ -29,7 +29,8 @@ log.setLevel(logging.INFO)
 # thousands of .py files under .venv). Matched by path segment, because watchdog's
 # ignore_patterns use PurePath.match, which only matches the trailing components,
 # so a pattern like "*/.venv/*" silently misses anything nested deeper.
-IGNORED_DIRS = {".venv", "venv", "__pycache__", ".git"}
+IGNORED_DIRS = {".venv", "venv", "__pycache__", ".git",
+                "build", "dist", ".build", ".sparkle-tools"}  # packaging output
 
 
 class PythonFileChangeHandler(PatternMatchingEventHandler):

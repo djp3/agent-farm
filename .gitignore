@@ -12,3 +12,10 @@ monitor_settings.json
 
 # editor / OS noise
 .DS_Store
+
+# packaging output (scripts/build_app.sh, scripts/release.sh)
+build/
+dist/
+macos/.build/
+macos/Resources/AppIcon.icns
+.sparkle-tools/
