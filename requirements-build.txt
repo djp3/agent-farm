@@ -1,1 +1,3 @@
-pyinstaller>=6.15
+# Needed only to build the Mac app and to regenerate requirements.lock.
+pyinstaller==6.22.3
+pip-tools==7.6.2

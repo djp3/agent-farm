@@ -27,6 +27,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
     ./supervisor.sh                  # runs main.py and hot-reloads it on any .py change
+    .venv/bin/python -m pytest       # the test suite (pytest is not in the requirements)
     .venv/bin/python main.py         # plain run
     .venv/bin/python main.py --usage --order activity   # one-run overrides of the saved settings
 
@@ -44,8 +45,17 @@ scratchpad history for the pattern.
 
 ## Building the app
 
-    .venv/bin/pip install -r requirements-build.txt     # PyInstaller
+    .venv/bin/pip install -r requirements-build.txt     # PyInstaller and pip-tools
     scripts/build_app.sh                                  # -> dist/agent-farm.app
+
+Dependencies are pinned exactly in `requirements.txt` and `requirements-build.txt`, and
+`requirements.lock` lists every package, indirect ones included, with the hashes of their
+files. The release workflow installs from the lock with `--require-hashes`, so what ships
+is decided by the repository, not by the package index on release day. To upgrade a
+library: bump its pin, regenerate the lock, run the tests, commit all three together:
+
+    .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe \
+        -o requirements.lock requirements.txt requirements-build.txt
 
 Steps, all in that script:
 
