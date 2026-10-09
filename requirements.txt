@@ -1,0 +1,3 @@
+textual>=8
+psutil>=7
+watchdog>=4

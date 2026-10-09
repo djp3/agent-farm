@@ -1,0 +1,14 @@
+# virtualenv and bytecode
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# runtime output
+logs/
+
+# per-user choices made in the Settings panel
+monitor_settings.json
+
+# editor / OS noise
+.DS_Store
