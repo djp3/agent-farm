@@ -18,6 +18,7 @@ import glob
 import json
 import logging
 import os
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -82,13 +83,23 @@ class UsageScanner:
         self.last_scan_duration = 0.0
         self.scanned_once = False
         self.file_count = 0
+        self._busy = threading.Lock()           # a scan that overruns must not overlap the next
 
     # ---- public --------------------------------------------------------------
     def due(self) -> bool:
         return time.time() - self._last_scan >= self.interval_s
 
     def scan(self) -> bool:
-        """Incrementally read new bytes from every transcript. Returns True if changed."""
+        """Incrementally read new bytes from every transcript. Returns True if changed,
+        False when nothing changed or the previous scan is still running."""
+        if not self._busy.acquire(blocking=False):
+            return False
+        try:
+            return self._scan_locked()
+        finally:
+            self._busy.release()
+
+    def _scan_locked(self) -> bool:
         t0 = time.time()
         self._last_scan = t0
         changed = False

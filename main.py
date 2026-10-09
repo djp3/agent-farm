@@ -667,6 +667,7 @@ class ClaudeMonitor(App):
                 pass
         self.query_one("#tree", Tree).focus()
         self._apply_detail_visibility()
+        self.collector.start()
         self.render_usage()
         self.collect()
         self.scan_usage()
@@ -693,6 +694,8 @@ class ClaudeMonitor(App):
         except Exception:        # keep the UI alive; details go to the log, not the screen
             log.exception("snapshot failed")
             self.call_from_thread(self._set_status, "collector error — see logs/monitor.log")
+            return
+        if snap is None:         # the previous tick is still running; this one skips its turn
             return
         try:
             self.call_from_thread(self.apply_snapshot, snap)

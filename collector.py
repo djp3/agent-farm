@@ -553,6 +553,21 @@ class ITerm2Map:
         self.by_tty: dict[str, dict] = {}
         self.available = os.path.exists(IT2)
         self._failures = 0                      # consecutive `session list` failures
+        self._lock = threading.Lock()           # one `it2 session list` at a time
+        self._thread: Optional[threading.Thread] = None
+
+    def start_background(self) -> None:
+        """Refresh the tab map on a thread of its own. `it2` can stall for seconds, and
+        that must not hold up the once-a-second collector tick, which only reads by_tty."""
+        if self._thread or not self.available:
+            return
+        self._thread = threading.Thread(target=self._loop, name="it2-refresh", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            self.refresh(force=True)
+            time.sleep(self.refresh_s)
 
     def refresh(self, force: bool = False) -> None:
         if not self.available:
@@ -560,7 +575,15 @@ class ITerm2Map:
         now = time.time()
         if not force and now - self._last < self.refresh_s:
             return
-        self._last = now
+        if not self._lock.acquire(blocking=False):      # a refresh is already running
+            return
+        try:
+            self._last = now
+            self._refresh_locked()
+        finally:
+            self._lock.release()
+
+    def _refresh_locked(self) -> None:
         try:
             r = subprocess.run(
                 [IT2, "session", "list", "--json"],
@@ -650,6 +673,13 @@ class Collector:
     def __init__(self):
         self.iterm = ITerm2Map()
         self._transcript_paths: dict[str, Path] = {}
+        # Textual's "exclusive" thread workers are only flagged as cancelled, they keep
+        # running, so a slow tick would otherwise overlap the next ones over shared state.
+        self._busy = threading.Lock()
+
+    def start(self) -> None:
+        """Begin background work the app needs: the iTerm2 tab map on its own thread."""
+        self.iterm.start_background()
 
     # ---- helpers ----------------------------------------------------------
     @staticmethod
@@ -791,8 +821,17 @@ class Collector:
         return agents
 
     # ---- main entry -------------------------------------------------------
-    def snapshot(self) -> list[Instance]:
-        self.iterm.refresh()
+    def snapshot(self) -> Optional[list[Instance]]:
+        """One pass over the registry, transcripts and processes. Returns None when the
+        previous pass is still running, so callers simply skip that tick."""
+        if not self._busy.acquire(blocking=False):
+            return None
+        try:
+            return self._snapshot_locked()
+        finally:
+            self._busy.release()
+
+    def _snapshot_locked(self) -> list[Instance]:
         instances: dict[int, Instance] = {}
         now = time.time()
 
@@ -929,6 +968,7 @@ STATUS_GLYPH = {
 
 if __name__ == "__main__":
     c = Collector()
+    c.iterm.refresh(force=True)      # the app refreshes this on a thread; the dump is one-shot
     for inst in c.snapshot():
         print(f"{STATUS_GLYPH.get(inst.status, '?')} [{inst.pid}] {inst.name or '(unnamed)'}  "
               f"{inst.project}{'@' + inst.branch if inst.branch else ''}  {inst.status} {fmt_age(inst.status_since)}  "
