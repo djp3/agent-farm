@@ -324,7 +324,8 @@ class TranscriptState:
                 except Exception as e:           # one malformed row must not poison the rest
                     self.bad_rows += 1
                     if _debounce.ok(("ingest", str(self.path))):
-                        log.warning("bad transcript row in %s: %r :: %.200s", self.path.name, e, raw)
+                        # Never the row itself: transcripts carry prompts and pasted text.
+                        log.warning("bad transcript row in %s: %r (%d bytes)", self.path.name, e, len(raw))
         if self.bad_rows > before and _debounce.ok(("badrows", str(self.path))):
             log.warning("%d malformed row(s) skipped in %s (total %d)",
                         self.bad_rows - before, self.path.name, self.bad_rows)
