@@ -171,6 +171,22 @@ def _parse_ts(s: Optional[str]) -> Optional[float]:
         return None
 
 
+# C0 controls except newline and tab, DEL, C1 controls, and the Unicode bidi controls that
+# can make text render misleadingly. Everything shown comes from files another program
+# wrote, and the UI is a terminal: an assistant message containing ESC ] 52 ; ... would
+# otherwise travel through Textual untouched and rewrite the clipboard.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x80-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+
+
+def clean_text(s) -> str:
+    """Text from a transcript, registry, meta file or iTerm2, made safe to put on screen."""
+    if not s:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
+    return _CONTROL_RE.sub("", s)
+
+
 def _first_line(s: str, n: int = 160) -> str:
     s = (s or "").strip().replace("\r", "")
     s = s.split("\n", 1)[0]
@@ -288,9 +304,9 @@ class TranscriptState:
             self.cwd = row["cwd"]
 
         if t == "custom-title":
-            self.title = row.get("customTitle") or self.title
+            self.title = clean_text(row.get("customTitle")) or self.title
         elif t == "last-prompt":
-            lp = row.get("lastPrompt") or ""
+            lp = clean_text(row.get("lastPrompt"))
             if lp and not self._note_teammate_messages(lp) and not lp.startswith("<"):
                 self.last_prompt = lp
         elif t == "user":
@@ -306,7 +322,7 @@ class TranscriptState:
                 self.permission_pending = False
         elif t == "system":
             if row.get("subtype") == "away_summary":
-                self.away_summary = row.get("content") or ""
+                self.away_summary = clean_text(row.get("content"))
         elif t == "cost-state":
             try:
                 self.cost_usd = float(row.get("totalCostUSD") or 0)
@@ -317,7 +333,7 @@ class TranscriptState:
             # in the row). remove: a specific item was absorbed mid-turn or deleted.
             # popAll: everything was consumed at once.
             op = row.get("operation")
-            c = row.get("content") or ""
+            c = clean_text(row.get("content"))
             if op == "enqueue":
                 self.queued.append({"content": c, "ts": ts})
             elif op == "dequeue":
@@ -336,7 +352,7 @@ class TranscriptState:
         if isinstance(content, str):
             relay = self._note_teammate_messages(content)
             if not row.get("isMeta") and not relay and not content.startswith("<"):
-                self.last_prompt, self.last_prompt_ts = content, ts
+                self.last_prompt, self.last_prompt_ts = clean_text(content), ts
                 self.last_row_kind = "prompt"
                 self.permission_pending = False
             return
@@ -354,13 +370,13 @@ class TranscriptState:
                 txt = c.get("text") or ""
                 relay = self._note_teammate_messages(txt)
                 if txt and not relay and not txt.startswith("<"):
-                    self.last_prompt, self.last_prompt_ts = txt, ts
+                    self.last_prompt, self.last_prompt_ts = clean_text(txt), ts
                     self.last_row_kind = "prompt"
         tur = row.get("toolUseResult")
         if isinstance(tur, dict) and tur.get("status") == "teammate_spawned":
             aid = tur.get("agent_id") or tur.get("teammate_id") or ""
             self.spawns[aid.split("@")[0]] = {
-                "name": tur.get("name") or "",
+                "name": clean_text(tur.get("name")),
                 "description": "",
                 "ts": ts,
             }
@@ -396,7 +412,7 @@ class TranscriptState:
         content = msg.get("content")
         if not isinstance(content, list):            # a plain-string assistant message
             if isinstance(content, str) and content.strip():
-                self.last_text, self.last_text_ts = content, ts
+                self.last_text, self.last_text_ts = clean_text(content), ts
                 self.last_row_kind = "text"
             return
         for c in content:
@@ -406,18 +422,18 @@ class TranscriptState:
             if ct == "text":
                 txt = c.get("text") or ""
                 if txt.strip():
-                    self.last_text, self.last_text_ts = txt, ts
+                    self.last_text, self.last_text_ts = clean_text(txt), ts
                     self.last_row_kind = "text"
             elif ct == "tool_use":
                 name = c.get("name") or "?"
                 inp = c.get("input") or {}
-                self.pending_tools[c.get("id")] = (name, _tool_summary(name, inp), ts)
+                self.pending_tools[c.get("id")] = (clean_text(name), clean_text(_tool_summary(name, inp)), ts)
                 self.last_row_kind = "tool_use"
                 if name in ("Agent", "Task") and isinstance(inp, dict):
-                    nm = inp.get("name") or ""
+                    nm = clean_text(inp.get("name"))
                     if nm:
                         self.spawns.setdefault(nm, {}).update(
-                            {"name": nm, "description": inp.get("description") or "", "ts": ts}
+                            {"name": nm, "description": clean_text(inp.get("description")), "ts": ts}
                         )
 
     # ---- derived ----------------------------------------------------------
@@ -758,10 +774,10 @@ class Collector:
                 tail = tail_for(jsonl) if jsonl.exists() else None
                 a = Agent(
                     agent_id=agent_id,
-                    name=meta.get("name") or meta.get("agentType") or agent_id,   # unnamed agents show their type
-                    agent_type=meta.get("agentType") or "",
-                    description=meta.get("description") or "",
-                    model=meta.get("model") or "",
+                    name=clean_text(meta.get("name") or meta.get("agentType")) or agent_id,   # unnamed agents show their type
+                    agent_type=clean_text(meta.get("agentType")),
+                    description=clean_text(meta.get("description")),
+                    model=clean_text(meta.get("model")),
                     color=meta.get("color") or "",
                     transcript=tail,
                 )
@@ -808,9 +824,9 @@ class Collector:
                         continue
                     agents.append(Agent(
                         agent_id=m.get("agentId") or m.get("name") or "?",
-                        name=m.get("name") or "?",
-                        agent_type=m.get("agentType") or "",
-                        description=f"teammate ({m.get('backendType', '')})",
+                        name=clean_text(m.get("name")) or "?",
+                        agent_type=clean_text(m.get("agentType")),
+                        description=clean_text(f"teammate ({m.get('backendType', '')})"),
                         status="running" if inst.alive else "archived",
                         archived=not inst.alive,
                         started_ts=(m.get("joinedAt") or 0) / 1000 or None,
@@ -846,7 +862,7 @@ class Collector:
             inst = Instance(
                 pid=pid,
                 session_id=reg.get("sessionId") or "",
-                name=reg.get("name") or "",
+                name=clean_text(reg.get("name")),
                 cwd=reg.get("cwd") or "",
                 kind=reg.get("kind") or "",
                 entrypoint=reg.get("entrypoint") or "",
@@ -918,7 +934,7 @@ class Collector:
             inst.tty = ttys.get(inst.pid, "")
             it = self.iterm.lookup(inst.tty)
             inst.iterm_session = it.get("id", "")
-            inst.iterm_title = it.get("title") or it.get("name") or ""
+            inst.iterm_title = clean_text(it.get("title") or it.get("name"))
             inst.iterm_tab = str(it.get("tab_id", ""))
             inst.iterm_window = it.get("window_id", "")
         tpath = self._find_transcript(inst.session_id, inst.cwd) if inst.session_id else None
