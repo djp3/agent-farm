@@ -172,13 +172,22 @@ def agent_glyphs(agents: list[Agent]) -> list[tuple[str, str]]:
     return glyphs
 
 
+APP_MARK = ("⧉", "cyan")              # the session runs inside the Claude desktop app
+
+
+def row_glyphs(i: Instance) -> list[tuple[str, str]]:
+    """What a head row shows in the strip column: the desktop-app marker, then its agents.
+    Keeping the marker in that column lines it up with the circles on every row instead of
+    trailing the name."""
+    return ([APP_MARK] if i.is_app else []) + agent_glyphs(i.agents)
+
+
 def strip_column_width(instances: list[Instance]) -> int:
     """The strip column is exactly as wide as the widest strip on screen right now."""
-    return max((len(agent_glyphs(i.agents)) for i in instances), default=0)
+    return max((len(row_glyphs(i)) for i in instances), default=0)
 
 
-def agent_strip(agents: list[Agent], width: int) -> Text:
-    glyphs = agent_glyphs(agents)
+def agent_strip(glyphs: list[tuple[str, str]], width: int) -> Text:
     t = Text()
     for g, st in glyphs:
         t.append(g, style=st)
@@ -270,19 +279,16 @@ def _status_words(status: str, since: float | None, now: float) -> Text:
 
 def instance_label(i: Instance, now: float, show_status: bool = False, name_width: int = 0,
                    strip_width: int = 0) -> Text:
-    """Row = name · agent strip · activity. The name comes first so subagent rows, indented
-    by the tree guides, visibly hang under their lead's name; the strip sits in its own
-    aligned column right after the name field."""
+    """Row = name · strip (app marker, agents) · activity. The name comes first so subagent
+    rows, indented by the tree guides, visibly hang under their lead's name; the strip sits
+    in its own aligned column right after the name field."""
     t = Text()
     name = i.name or f"pid {i.pid}"
-    if i.is_app:                              # runs in the Claude desktop app, not a terminal:
-        t.append(_fit_name(name, name_width - 2 if name_width else 0), style="bold")
-        t.append(" ⧉", style="cyan")          # the marker survives name truncation
-    else:
-        t.append(_fit_name(name, name_width), style="bold")
-    if strip_width:
+    t.append(_fit_name(name, name_width), style="bold")
+    glyphs = row_glyphs(i)
+    if strip_width or glyphs:
         t.append(" ")
-        t.append_text(agent_strip(i.agents, strip_width))
+        t.append_text(agent_strip(glyphs, strip_width))
     if show_status:
         t.append_text(_status_words(i.status, i.status_since, now))
     act = i.activity

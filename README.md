@@ -75,9 +75,10 @@ paints on its own Claude status dot, so the tab bar and agent-farm agree:
 | magenta | | **stale**: silent too long mid tool-call, likely killed |
 | red | agent-farm could not read this session (see the log) | |
 
-After the glyph comes the session name. Sessions running inside the Claude desktop app
-carry a `⧉` after it. Then the **agent strip**: one circle per subagent of the current run
-and one `✱` per five, in the same colors and ordered running → starting → stale → dormant.
+After the glyph comes the session name, then the **agent strip** column: a cyan `⧉` first
+when the session runs inside the Claude desktop app, then one circle per subagent of the
+current run and one `✱` per five, in the same colors and ordered running → starting →
+stale → dormant.
 `●` is working, `○` finished and dormant, `◌` still starting, `◍` stale, so the strip reads
 without color. The strip column is as wide as the widest team on screen, and names are
 padded to a fixed column, so activity text lines up down the whole list.
