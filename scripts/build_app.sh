@@ -31,8 +31,10 @@ else
 fi
 
 step "host app: swift build"
-( cd macos && swift build -c release --product AgentFarm 2>&1 | grep -E "error|warning: unre|Build complete" || true )
 BIN=macos/.build/release/AgentFarm
+rm -f "$BIN"                                   # so an existing binary can only come from this build
+( cd macos && swift build -c release --product AgentFarm 2>&1 | grep -E "error|warning: unre|Build complete"
+  [ "${PIPESTATUS[0]}" -eq 0 ] )              # keep the compiler's verdict, not grep's
 [ -x "$BIN" ] || { echo "swift build did not produce $BIN" >&2; exit 1; }
 SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "*macos-*" | head -1)
 [ -d "$SPARKLE_FW" ] || { echo "Sparkle.framework not found under macos/.build/artifacts" >&2; exit 1; }
