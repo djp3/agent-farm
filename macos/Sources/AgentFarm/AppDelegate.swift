@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
     private var coreRunning = false
+    /// Set by Restart Monitor; consumed when the old process has actually gone away.
+    private var restartRequested = false
 
     private let defaults = UserDefaults.standard
     private var fontSize: CGFloat {
@@ -134,12 +136,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     }
 
     @objc func restartCore(_ sender: Any?) {
-        if coreRunning {
-            terminal.terminate()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startCore() }
-        } else {
-            startCore()
-        }
+        guard coreRunning else { startCore(); return }
+        // Only stop it here. The monitor exits cleanly on SIGTERM, and SwiftTerm ignores a
+        // new startProcess until the old session has wound down, so the relaunch happens in
+        // processTerminated once that is true.
+        restartRequested = true
+        terminal.terminate()
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
@@ -156,6 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         coreRunning = false
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            if self.restartRequested {       // Restart Monitor: the clean exit was ours
+                self.restartRequested = false
+                self.startCore()
+                return
+            }
             if exitCode == 0 {               // the user pressed q inside the monitor
                 NSApp.terminate(nil)
                 return
