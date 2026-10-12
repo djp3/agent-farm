@@ -700,21 +700,27 @@ class ITerm2Map:
         if not session_id:
             log.warning("focus %s: no iTerm2 session id mapped", label)
             return False, "no iTerm2 session mapped"
+        # Order matters. First make iTerm2 the active app (through Launch Services: macOS
+        # ignores an app activating itself from behind another app), then have iTerm2
+        # select the tab and order its window front: an *active* app ordering a window
+        # front switches to that window's Space. The other way round raced, and macOS
+        # would activate iTerm2 on whatever window it already had on the current Space,
+        # leaving the target on a Space the user was not looking at.
+        ok, why = self.activate(ITERM_BUNDLE_ID, label)
+        if not ok:
+            return False, why
         cmd = [IT2, "session", "focus", session_id]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
         except Exception as e:
             log.exception("focus %s: %s failed to run", label, " ".join(cmd))
             return False, repr(e)
-        if r.returncode == 0:
-            log.info("focus %s: ok (session %s)", label, session_id)
-            # `it2 session focus` selects the tab and window inside iTerm2 but cannot bring
-            # iTerm2 in front of another app; from a terminal that never showed because
-            # iTerm2 was already frontmost. Activate it explicitly.
-            return self.activate(ITERM_BUNDLE_ID, label)
-        msg = (r.stderr or r.stdout).strip()[:300]
-        log.warning("focus %s: rc=%d cmd=%s :: %s", label, r.returncode, " ".join(cmd), msg)
-        return False, msg or f"it2 exited {r.returncode}"
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout).strip()[:300]
+            log.warning("focus %s: rc=%d cmd=%s :: %s", label, r.returncode, " ".join(cmd), msg)
+            return False, msg or f"it2 exited {r.returncode}"
+        log.info("focus %s: ok (session %s)", label, session_id)
+        return True, ""
 
 
 # --------------------------------------------------------------------------- #
