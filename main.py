@@ -991,8 +991,7 @@ class ClaudeMonitor(App):
         self._apply_detail_visibility()
 
     def action_refresh_now(self) -> None:
-        self.collector.iterm.refresh(force=True)
-        self.collect()
+        self.collect()            # the tab map refreshes on its own thread; a tick is enough
 
     def action_focus_tab(self) -> None:
         tree = self.query_one("#tree", Tree)
@@ -1005,12 +1004,18 @@ class ClaudeMonitor(App):
             return
         label = f"{inst.name or inst.pid} (pid {inst.pid}, {'Claude app' if inst.is_app else 'tty ' + (inst.tty or '?')})"
         log.info("focus requested for %s -> iTerm session %r title %r", label, inst.iterm_session, inst.iterm_title)
+        self._focus_in_background(inst, label)
+
+    @work(thread=True, group="focus")
+    def _focus_in_background(self, inst: Instance, label: str) -> None:
+        """it2 and open can wait seconds on iTerm2; never on the thread that draws."""
         ok, why = self.collector.focus_instance(inst, label)
         if ok:
-            self.notify("brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}",
-                        timeout=2)
+            msg = "brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}"
+            self.call_from_thread(self.notify, msg, timeout=2)
         else:
-            self.notify(f"focus failed: {why[:60]} — see logs/monitor.log", severity="warning", timeout=4)
+            self.call_from_thread(self.notify, f"focus failed: {why[:60]} — see logs/monitor.log",
+                                  severity="warning", timeout=4)
 
 
 if __name__ == "__main__":
