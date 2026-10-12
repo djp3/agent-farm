@@ -613,6 +613,7 @@ class ClaudeMonitor(App):
     def __init__(self, order_name: str | None = None, show_usage: bool | None = None,
                  settings: Settings | None = None):
         super().__init__()
+        self.log_path = setup_logging()          # first, so a settings warning has somewhere to go
         self.settings = settings or Settings.load()
         try:
             self.ordering: Ordering = get_ordering(order_name or self.settings.ordering)
@@ -635,7 +636,6 @@ class ClaudeMonitor(App):
         self.detail_forced: bool | None = None      # None = auto by width
         self.last_snapshot_at = 0.0
         self.instances: list[Instance] = []
-        self.log_path = setup_logging()
         logging.getLogger("monitor").addHandler(errors)
         log.info("monitor starting (pid %s)", __import__("os").getpid())
 
@@ -689,18 +689,28 @@ class ClaudeMonitor(App):
             self.render_usage()
 
     # ---- data -------------------------------------------------------------
+    def _on_ui(self, fn, *args, **kwargs) -> None:
+        """Run fn on the UI thread from a worker. A worker that finishes after q finds the
+        app gone and call_from_thread raises "App is not running"; that is not an error."""
+        try:
+            self.call_from_thread(fn, *args, **kwargs)
+        except RuntimeError as e:
+            if "not running" not in str(e):
+                raise
+            log.debug("dropped a UI update after shutdown: %s", getattr(fn, "__name__", fn))
+
     @work(thread=True, exclusive=True, group="collect")
     def collect(self) -> None:
         try:
             snap = self.collector.snapshot()
         except Exception:        # keep the UI alive; details go to the log, not the screen
             log.exception("snapshot failed")
-            self.call_from_thread(self._set_status, "collector error — see logs/monitor.log")
+            self._on_ui(self._set_status, "collector error — see logs/monitor.log")
             return
         if snap is None:         # the previous tick is still running; this one skips its turn
             return
         try:
-            self.call_from_thread(self.apply_snapshot, snap)
+            self._on_ui(self.apply_snapshot, snap)
         except Exception:
             log.exception("apply_snapshot failed")
 
@@ -712,7 +722,7 @@ class ClaudeMonitor(App):
             log.exception("usage scan failed")
             return
         if changed or not self._usage_width:
-            self.call_from_thread(self.render_usage)
+            self._on_ui(self.render_usage)
 
     def render_usage(self) -> None:
         try:
@@ -1012,10 +1022,10 @@ class ClaudeMonitor(App):
         ok, why = self.collector.focus_instance(inst, label)
         if ok:
             msg = "brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}"
-            self.call_from_thread(self.notify, msg, timeout=2)
+            self._on_ui(self.notify, msg, timeout=2)
         else:
-            self.call_from_thread(self.notify, f"focus failed: {why[:60]} — see logs/monitor.log",
-                                  severity="warning", timeout=4)
+            self._on_ui(self.notify, f"focus failed: {why[:60]} — see logs/monitor.log",
+                        severity="warning", timeout=4)
 
 
 if __name__ == "__main__":
