@@ -21,7 +21,7 @@ import os
 import threading
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -76,7 +76,12 @@ class _FileState:
 class UsageScanner:
     def __init__(self, interval_s: float = 10.0):
         self.interval_s = interval_s
+        # The scanner thread's working tallies. The UI never reads these: at the end of
+        # each scan a frozen copy is published, so a redraw on the main thread can never
+        # iterate a Counter the scanner is adding a key to.
         self.days: dict[str, DayUsage] = {}
+        self._published: dict[str, DayUsage] = {}
+        self._publish_lock = threading.Lock()
         self._files: dict[str, _FileState] = {}
         self._history = _FileState()
         self._last_scan = 0.0
@@ -118,16 +123,27 @@ class UsageScanner:
         self.last_scan_duration = time.time() - t0
         if not self.scanned_once:
             log.info("usage: first scan of %d transcripts took %.2fs", len(paths), self.last_scan_duration)
+        self._publish()
         self.scanned_once = True
         return changed
 
+    def _publish(self) -> None:
+        """Replace the readable snapshot with independent copies of the working tallies."""
+        frozen = {date: replace(d, sessions=set(d.sessions), out_by_model=Counter(d.out_by_model))
+                  for date, d in self.days.items()}
+        with self._publish_lock:
+            self._published = frozen
+
     def report(self, n_days: int = 14) -> list[DayUsage]:
-        """The last n_days of local days, oldest first, zero-filled."""
+        """The last n_days of local days, oldest first, zero-filled. Reads the snapshot
+        published by the last completed scan, never the scanner's working state."""
+        with self._publish_lock:
+            published = self._published
         today = datetime.now().date()
         out = []
         for i in range(n_days - 1, -1, -1):
             d = (today.fromordinal(today.toordinal() - i)).strftime("%Y-%m-%d")
-            out.append(self.days.get(d) or DayUsage(date=d))
+            out.append(published.get(d) or DayUsage(date=d))
         return out
 
     def model_split(self, n_days: int = 14) -> list[tuple[str, int]]:
