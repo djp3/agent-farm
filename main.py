@@ -1,10 +1,11 @@
 """
 agent-farm — a Textual TUI that watches every Claude Code instance on this Mac.
 
-Head agents are top-level rows; subagents / teammates nest beneath them.
-Head agents are the tree rows; the detail pane for the highlighted row sits underneath,
-and a usage panel (tokens per day across every transcript) sits to the right of the tree.
-Keys: ↑/↓ move · enter/space fold · f focus iTerm2 tab · d detail · u usage · m metric · s settings · r refresh · q quit
+Head agents are the tree rows and their subagents / teammates nest beneath them; the detail
+pane for the highlighted row sits underneath, and a usage panel (tokens per day across every
+transcript) sits to the right of the tree.
+Keys: ↑/↓ move · enter/space fold · f bring the session forward (iTerm2 tab or Claude app) ·
+d detail · u usage · m metric · s settings · r refresh · q quit
 Instances are ordered by the Ordering chosen in Settings (see ordering.py); `--order NAME` overrides for one run.
 """
 from __future__ import annotations
@@ -114,7 +115,7 @@ STATUS_STYLE = {
     "dormant": "dim #5f87ff",         # finished, resident, can be messaged again
     "stale": "#d75fd7",               # silent too long mid tool-call, likely killed
     "archived": "dim #888888",        # log only
-    "error": "#ff5f5f",               # the collector failed on this row (see logs/monitor.log)
+    "error": "#ff5f5f",               # the collector failed on this row (see the log)
 }
 
 
@@ -206,7 +207,8 @@ def fleet_line(instances: list[Instance], show_text: bool,
                error_count: int, it2_ok: bool) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
     by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
-    circles-and-asterisks system as the rows, then order, it2 and clock in dim text.
+    circles-and-asterisks system as the rows, then red notes only when it2 is missing or
+    warnings were logged recently.
     With the status-text setting on, the counts are also spelled out."""
     live = [i for i in instances if i.alive]
     t = Text()
@@ -233,12 +235,12 @@ def fleet_line(instances: list[Instance], show_text: bool,
         t.append("it2 missing — focus (f) unavailable", style=STATUS_STYLE["error"])
     if error_count:                      # recent problems only; the tooltip has the total
         t.append("  ")
-        t.append(f"⚠ {error_count} (logs/monitor.log)", style=STATUS_STYLE["error"])
+        t.append(f"⚠ {error_count} (see the log)", style=STATUS_STYLE["error"])
     return t
 
 
 def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool) -> str:
-    """Everything the fleet line encodes, as words (shown on mouse hover)."""
+    """Everything the fleet line encodes, plus the active ordering, as words (on hover)."""
     live = [i for i in instances if i.alive]
     counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "idle")}
     inactive = len(instances) - len(live) + sum(1 for i in live if i.status == "unknown")
@@ -259,7 +261,7 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
         lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last {ERROR_WINDOW_S // 60} minutes "
-                     f"({errors.count} since launch) — details in logs/monitor.log")
+                     f"({errors.count} since launch) — details in the log (Monitor ▸ Open Log Folder)")
     return "\n".join(lines)
 
 
@@ -605,7 +607,7 @@ class ClaudeMonitor(App):
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("f", "focus_tab", "Focus iTerm tab"),
+        Binding("f", "focus_tab", "Bring forward"),
         Binding("d", "toggle_detail", "Detail"),
         Binding("u", "toggle_usage", "Usage"),
         Binding("m", "cycle_metric", "Metric", show=False),   # documented in the usage panel itself
@@ -707,7 +709,7 @@ class ClaudeMonitor(App):
             snap = self.collector.snapshot()
         except Exception:        # keep the UI alive; details go to the log, not the screen
             log.exception("snapshot failed")
-            self._on_ui(self._set_status, "collector error — see logs/monitor.log")
+            self._on_ui(self._set_status, f"collector error — see {self.log_path}")
             return
         if snap is None:         # the previous tick is still running; this one skips its turn
             return
@@ -1026,7 +1028,7 @@ class ClaudeMonitor(App):
             msg = "brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}"
             self._on_ui(self.notify, msg, timeout=2)
         else:
-            self._on_ui(self.notify, f"focus failed: {why[:60]} — see logs/monitor.log",
+            self._on_ui(self.notify, f"focus failed: {why[:60]} — see the log",
                         severity="warning", timeout=4)
 
 

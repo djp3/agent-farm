@@ -9,7 +9,7 @@
 # Installed apps poll https://github.com/djp3/agent-farm/releases/latest/download/appcast.xml,
 # so creating the release is what ships the update.
 #
-# One-time setup (README, "Releasing"):
+# One-time setup (DEVELOPMENT.md, "Releasing"):
 #   - a "Developer ID Application" certificate in the login keychain
 #   - notarization credentials: a notarytool keychain profile named agent-farm
 #       xcrun notarytool store-credentials agent-farm --apple-id <id> --team-id <team> --password <app-specific>

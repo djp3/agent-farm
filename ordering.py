@@ -4,7 +4,7 @@ Orderings for the instance list.
 An Ordering is a sequence of Tiers. An instance belongs to the first tier whose
 `match` accepts it and is sorted within that tier by `key` (ascending). Instances
 that match no tier go last. Add a new ordering by appending to ORDERINGS; the TUI
-cycles through them with the `o` key and accepts `--order NAME` on the command line.
+offers them in Settings (s) and accepts `--order NAME` on the command line.
 
 Keys must be comparable within a tier; the helpers below turn optional timestamps
 into floats so None never breaks a sort.

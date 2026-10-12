@@ -14,10 +14,9 @@ iTerm2 which tab owns which session.
    [latest release](https://github.com/djp3/agent-farm/releases/latest), unzip it and drag
    `agent-farm.app` to Applications.
 2. Open it. The app is notarized, so it opens like any other download.
-3. On first use macOS may ask for two permissions. Both are optional:
-   - **Files and Folders** (Documents, Desktop and similar) lets the detail pane show the
-     git repository of sessions working in those folders.
-   - **Automation** of iTerm2 and Claude lets the `f` key bring a session's window forward.
+3. On first use macOS may ask for one permission, which is optional: **Files and Folders**
+   (Documents, Desktop and similar) lets the detail pane show the git repository of
+   sessions working in those folders.
 
 Updates install themselves: the app checks GitHub once a day and offers each new release
 with its notes. **agent-farm ▸ Check for Updates…** checks now.
@@ -83,7 +82,8 @@ stale → dormant.
 without color. The strip column is as wide as the widest team on screen, and names are
 padded to a fixed column, so activity text lines up down the whole list.
 
-Last comes the activity text: the running tool, the last message, or the last prompt.
+Last comes the activity text: what a waiting session is waiting for, the running tool, or
+the last message; a subagent with nothing to say yet shows its task.
 
 ### The fleet line
 

@@ -15,7 +15,7 @@ PY=./.venv/bin/python3
 APP=dist/agent-farm.app
 # Sign with the first Developer ID Application certificate when the keychain has one (by
 # hash, since a renewed certificate can sit beside the old one under the same name), else
-# ad-hoc. macOS privacy grants (Files and Folders, Automation) are tied to the signing
+# ad-hoc. macOS privacy grants (Files and Folders) are tied to the signing
 # identity, so local builds signed the same way as releases keep the user's permissions.
 IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $2; exit}')}
 IDENTITY=${IDENTITY:--}

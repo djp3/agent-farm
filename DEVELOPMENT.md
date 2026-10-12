@@ -40,8 +40,8 @@ the app does not restart the monitor you are looking at. It restarts the child o
 to `supervisor.py` itself need a manual restart. The child's stderr is deliberately not
 captured, because Textual draws on stderr; crashes are logged by `main.py` and exit 1.
 
-Headless checks use Textual's `run_test` and `save_screenshot`; see the tests in the
-scratchpad history for the pattern.
+The tests in `tests/` are plain pytest; the ones that drive the UI use Textual's
+`run_test` with a pinned snapshot (see `tests/test_focus_async.py` for the pattern).
 
 ## Building the app
 
@@ -73,10 +73,10 @@ Steps, all in that script:
    hardened runtime (an ad-hoc signature has no team, so a hardened-runtime app could not
    load its own frameworks). `CODESIGN_IDENTITY="Developer ID Application: …"` signs for real.
 
-The host app (`macos/Sources/AgentFarm/AppDelegate.swift`) sets `COLORTERM=truecolor`,
-a UTF-8 locale and a PATH that includes Homebrew and iTerm2's `it2` for the child, maps
-`q` to quitting the app, shows a restart hint if the Python side exits with an error, and
-provides the menus. `swift run` from `macos/` works without a bundle for UI work; set
+The host app (`macos/Sources/AgentFarm/AppDelegate.swift`) sets `COLORTERM=truecolor`
+and a UTF-8 locale for the child (helpers are run by absolute path, so no PATH changes),
+quits when the Python side exits cleanly (after `q` in the monitor), shows a restart hint
+if it exits with an error, and provides the menus. `swift run` from `macos/` works without a bundle for UI work; set
 `AGENT_FARM_CORE=/path/to/executable` to choose what it runs, and Sparkle stays off because
 there is no `Info.plist`.
 

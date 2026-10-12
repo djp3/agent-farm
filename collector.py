@@ -537,7 +537,7 @@ class Agent:
 
 @dataclass
 class Instance:
-    """A head Claude Code process (one per terminal)."""
+    """A head Claude Code process: one per terminal tab or desktop-app conversation."""
     pid: int
     session_id: str = ""
     name: str = ""
@@ -673,8 +673,8 @@ class ITerm2Map:
     @staticmethod
     def activate(bundle_id: str, label: str = "") -> tuple[bool, str]:
         """Bring an application to the front through Launch Services (`open -b`). Unlike an
-        AppleScript `activate` this needs no Automation permission, which matters once the
-        monitor runs as its own app rather than inside iTerm2."""
+        AppleScript `activate` this needs no Automation permission, which matters now that
+        agent-farm is its own app rather than a TUI inside iTerm2."""
         try:
             r = subprocess.run([OPEN, "-b", bundle_id], capture_output=True, text=True, timeout=5)
         except Exception as e:
@@ -910,7 +910,7 @@ class Collector:
             try:
                 self._fill_instance(inst, ttys, now)
             except Exception as e:               # one broken instance must not blank the others
-                inst.status_detail = "collector error (see logs/monitor.log)"
+                inst.status_detail = "collector error (see the log)"
                 if _debounce.ok(("instance", inst.pid)):
                     log.exception("collecting pid=%s name=%r failed: %r", inst.pid, inst.name, e)
 
