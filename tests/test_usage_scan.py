@@ -50,7 +50,7 @@ def test_lines_straddling_slice_boundaries_are_counted_once(tmp_path, monkeypatc
 
 def test_unreadable_path_warns_once_per_window(tmp_path, caplog):
     u = UsageScanner()
-    with caplog.at_level(logging.WARNING, logger="monitor.usage"):
+    with caplog.at_level(logging.WARNING, logger="agent_farm.usage"):
         u._scan_paths([str(tmp_path)])               # a directory: open() raises
         u._scan_paths([str(tmp_path)])
     assert sum("usage scan failed" in r.getMessage() for r in caplog.records) == 1

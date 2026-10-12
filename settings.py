@@ -1,7 +1,7 @@
 """
-User settings for the monitor, persisted as JSON next to the code, or under
+User settings for agent-farm, persisted as settings.json next to the code, or under
 ~/Library/Application Support/agent-farm when running as the bundled Mac app
-(override the path with CLAUDE_MONITOR_SETTINGS). Command-line flags win for one run
+(override the path with AGENT_FARM_SETTINGS). Command-line flags win for one run
 but are not written back. Add a setting by adding a field with a default; unknown or
 malformed keys in the file are ignored so an old file never breaks startup.
 """
@@ -15,9 +15,10 @@ from pathlib import Path
 
 from apppaths import data_dir
 
-log = logging.getLogger("monitor.settings")
+log = logging.getLogger("agent_farm.settings")
 
-DEFAULT_PATH = data_dir() / "monitor_settings.json"
+DEFAULT_PATH = data_dir() / "settings.json"
+LEGACY_PATH = data_dir() / "monitor_settings.json"     # the name before the project was agent-farm
 
 
 @dataclass
@@ -30,12 +31,24 @@ class Settings:
 
     @classmethod
     def path(cls) -> Path:
-        return Path(os.environ.get("CLAUDE_MONITOR_SETTINGS") or DEFAULT_PATH)
+        override = os.environ.get("AGENT_FARM_SETTINGS") or os.environ.get("CLAUDE_MONITOR_SETTINGS")
+        return Path(override or DEFAULT_PATH)
+
+    @classmethod
+    def _migrate_legacy(cls, p: Path) -> None:
+        """Carry a monitor_settings.json over to settings.json once, so nothing is lost."""
+        if p == DEFAULT_PATH and not p.exists() and LEGACY_PATH.exists():
+            try:
+                os.replace(LEGACY_PATH, p)
+                log.info("moved %s to %s", LEGACY_PATH.name, p.name)
+            except OSError as e:
+                log.warning("could not rename %s: %r", LEGACY_PATH, e)
 
     @classmethod
     def load(cls) -> "Settings":
         s = cls()
         p = cls.path()
+        cls._migrate_legacy(p)
         try:
             data = json.loads(p.read_text())
         except FileNotFoundError:

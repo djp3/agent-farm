@@ -31,9 +31,11 @@ Python, so day-to-day development never touches Swift or the bundle.
     .venv/bin/python main.py         # plain run
     .venv/bin/python main.py --usage --order activity   # one-run overrides of the saved settings
 
-From a checkout the settings file is `monitor_settings.json` next to the code (or
-`CLAUDE_MONITOR_SETTINGS`), and logs go to `logs/monitor.log` and `logs/supervisor.log`.
-`CLAUDE_MONITOR_ORDER` and `CLAUDE_MONITOR_USAGE=1` do what the flags do.
+From a checkout the settings file is `settings.json` next to the code (or
+`AGENT_FARM_SETTINGS`), and logs go to `logs/agent-farm.log` and `logs/supervisor.log`.
+`AGENT_FARM_ORDER` and `AGENT_FARM_USAGE=1` do what the flags do. The pre-rename names
+(`CLAUDE_MONITOR_*`, `monitor_settings.json`) are still read for one release; an old
+settings file is renamed in place on first load.
 
 The supervisor ignores `.venv`, `build`, `dist`, `.build` and `.sparkle-tools`, so building
 the app does not restart the monitor you are looking at. It restarts the child only; edits

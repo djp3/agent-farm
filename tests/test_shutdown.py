@@ -10,14 +10,14 @@ import main
 
 
 def test_ui_call_after_shutdown_is_quiet(caplog):
-    app = main.ClaudeMonitor()                       # never run: call_from_thread raises
-    with caplog.at_level(logging.DEBUG, logger="monitor.app"):
+    app = main.AgentFarm()                       # never run: call_from_thread raises
+    with caplog.at_level(logging.DEBUG, logger="agent_farm.app"):
         app._on_ui(lambda: None)
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 def test_other_runtime_errors_still_surface():
-    app = main.ClaudeMonitor()
+    app = main.AgentFarm()
 
     def boom(*a, **k):
         raise RuntimeError("boom")
@@ -28,20 +28,20 @@ def test_other_runtime_errors_still_surface():
 
 def test_logging_is_ready_before_settings_load(tmp_path):
     # A fresh interpreter, so the file handler cannot already exist from an earlier test.
-    bad = tmp_path / "monitor_settings.json"
+    bad = tmp_path / "settings.json"
     bad.write_text("{not json")
     code = f"""
 import logging, os
-os.environ["CLAUDE_MONITOR_SETTINGS"] = {str(bad)!r}
+os.environ["AGENT_FARM_SETTINGS"] = {str(bad)!r}
 from logging.handlers import RotatingFileHandler
 import main
 seen = []
 real = main.Settings.load
 def probe():
-    seen.append(any(isinstance(h, RotatingFileHandler) for h in logging.getLogger("monitor").handlers))
+    seen.append(any(isinstance(h, RotatingFileHandler) for h in logging.getLogger("agent_farm").handlers))
     return real()
 main.Settings.load = staticmethod(probe)
-app = main.ClaudeMonitor()
+app = main.AgentFarm()
 print("handler-before-load", seen[0], "defaults", app.settings.ordering)
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,

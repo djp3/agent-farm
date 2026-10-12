@@ -175,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
                 return
             }
             let code = exitCode.map(String.init) ?? "?"
-            let log = Self.logDir.appendingPathComponent("monitor.log").path
+            let log = Self.logDir.appendingPathComponent("agent-farm.log").path
             self.terminal.feed(text: "\r\n\u{1b}[31m  agent-farm-core exited with code \(code)\u{1b}[0m\r\n"
                                + "  details: \(log)\r\n  \u{2318}R restarts the monitor, \u{2318}Q quits.\r\n")
         }
@@ -293,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     @objc func revealSettings(_ sender: Any?) {
         try? FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
-        let file = Self.dataDir.appendingPathComponent("monitor_settings.json")
+        let file = Self.dataDir.appendingPathComponent("settings.json")
         if FileManager.default.fileExists(atPath: file.path) {
             NSWorkspace.shared.activateFileViewerSelecting([file])
         } else {

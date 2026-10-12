@@ -160,8 +160,8 @@ shown.
 
 | what | where |
 |------|-------|
-| settings | `~/Library/Application Support/agent-farm/monitor_settings.json` |
-| log | `~/Library/Logs/agent-farm/monitor.log` |
+| settings | `~/Library/Application Support/agent-farm/settings.json` |
+| log | `~/Library/Logs/agent-farm/agent-farm.log` |
 
 Errors never appear in detail on screen; the fleet line only shows the `⚠ N` badge.
 **Monitor ▸ Open Log Folder** opens the log, which records failed focus attempts and why,

@@ -1,8 +1,8 @@
 """
-Where the monitor keeps its own files.
+Where agent-farm keeps its own files.
 
 Run from a checkout (the supervisor / `python main.py` flow) everything stays next to
-the code, as before: logs/ and monitor_settings.json. Run as the bundled Mac app
+the code: logs/ and settings.json. Run as the bundled Mac app
 (PyInstaller sets sys.frozen) the bundle is signed and read-only, so logs go to
 ~/Library/Logs/agent-farm and settings to ~/Library/Application Support/agent-farm.
 """

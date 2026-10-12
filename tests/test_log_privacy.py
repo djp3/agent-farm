@@ -13,7 +13,7 @@ def test_bad_row_content_stays_out_of_the_log(tmp_path, caplog, monkeypatch):
     # Valid JSON whose shape makes the handler raise: this is the row the log line sees.
     p.write_text('{"type": "user", "message": {"content": "fine"}}\n'
                  '{"type": "user", "timestamp": "2026-10-09T10:00:00Z", "message": "' + secret + '"}\n')
-    with caplog.at_level(logging.WARNING, logger="monitor.collector"):
+    with caplog.at_level(logging.WARNING, logger="agent_farm.collector"):
         t = tail_for(p)
     assert t.bad_rows == 1
     messages = [r.getMessage() for r in caplog.records]

@@ -42,7 +42,7 @@ ITERM_BUNDLE_ID = "com.googlecode.iterm2"
 CLAUDE_APP_BUNDLE_ID = "com.anthropic.claudefordesktop"
 LOG_DIR = log_dir()  # logs/ next to the code, or ~/Library/Logs/agent-farm in the app
 
-log = logging.getLogger("monitor.collector")
+log = logging.getLogger("agent_farm.collector")
 
 
 class ErrorCounter(logging.Handler):
@@ -63,11 +63,11 @@ class ErrorCounter(logging.Handler):
         return sum(1 for t in self._when if t >= cutoff)
 
 
-def setup_logging(filename: str = "monitor.log", level: int = logging.INFO) -> Path:
+def setup_logging(filename: str = "agent-farm.log", level: int = logging.INFO) -> Path:
     """Send everything under the 'monitor' logger to logs/<filename> (rotating, 1 MB x 3)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     path = LOG_DIR / filename
-    root = logging.getLogger("monitor")
+    root = logging.getLogger("agent_farm")
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         h = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3)
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))

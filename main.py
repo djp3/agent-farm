@@ -37,7 +37,7 @@ from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
 from usage import WINDOW_DAYS, UsageScanner, fmt_count
 
-log = logging.getLogger("monitor.app")
+log = logging.getLogger("agent_farm.app")
 errors = ErrorCounter()
 
 REFRESH_S = 1.0
@@ -590,7 +590,7 @@ class SettingsScreen(Screen):
         self.app.pop_screen()
 
 
-class ClaudeMonitor(App):
+class AgentFarm(App):
     TITLE = "agent-farm"
     CSS = """
     Screen { layout: vertical; }
@@ -640,7 +640,7 @@ class ClaudeMonitor(App):
         self.detail_forced: bool | None = None      # None = auto by height
         self.last_snapshot_at = 0.0
         self.instances: list[Instance] = []
-        logging.getLogger("monitor").addHandler(errors)
+        logging.getLogger("agent_farm").addHandler(errors)
         log.info("monitor starting (pid %s)", os.getpid())
 
     def _handle_exception(self, error: Exception) -> None:
@@ -1035,14 +1035,15 @@ class ClaudeMonitor(App):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Monitor the Claude Code instances on this Mac.")
-    ap.add_argument("--order", default=os.environ.get("CLAUDE_MONITOR_ORDER") or None,
+    env = os.environ
+    ap.add_argument("--order", default=env.get("AGENT_FARM_ORDER") or env.get("CLAUDE_MONITOR_ORDER") or None,
                     choices=[o.name for o in ORDERINGS],
                     help="initial instance ordering for this run (default: the saved setting)")
     ap.add_argument("--usage", action="store_true",
-                    default=os.environ.get("CLAUDE_MONITOR_USAGE", "") not in ("", "0", "false"),
+                    default=(env.get("AGENT_FARM_USAGE") or env.get("CLAUDE_MONITOR_USAGE") or "") not in ("", "0", "false"),
                     help="start with the usage panel shown (default: the saved setting)")
     args = ap.parse_args()
-    app = ClaudeMonitor(order_name=args.order, show_usage=True if args.usage else None)
+    app = AgentFarm(order_name=args.order, show_usage=True if args.usage else None)
     try:
         app.run()
     except Exception:            # errors outside Textual's own handling (startup, driver)

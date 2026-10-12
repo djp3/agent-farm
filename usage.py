@@ -32,7 +32,7 @@ WINDOW_DAYS = 14                    # what the panel shows; older files are neve
 CHUNK_BYTES = 8 * 1024 * 1024       # transcripts are read in slices, never whole (one here is 89 MB)
 WARN_EVERY_S = 900                  # per-file read failures are logged at most this often
 
-log = logging.getLogger("monitor.usage")
+log = logging.getLogger("agent_farm.usage")
 
 _NEEDLES = (b'"usage"', b'"cost-state"')
 

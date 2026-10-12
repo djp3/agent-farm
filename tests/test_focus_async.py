@@ -16,7 +16,7 @@ def test_focus_runs_off_the_ui_thread_and_notifies():
         return True, ""
 
     async def go():
-        app = main.ClaudeMonitor()
+        app = main.AgentFarm()
         inst = Instance(pid=77, session_id="s77", name="payable", alive=True, status="idle")
         inst.iterm_session, inst.iterm_title = "ABC", "payable tab"
         app.collector.snapshot = lambda: [inst]
