@@ -133,5 +133,6 @@ Actions tab after `VERSION` is bumped on `main`. It needs these repository secre
 | `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`, `NOTARY_KEY_P8` | an App Store Connect API key with the Developer role: id, issuer id, and the `.p8` contents |
 | `SPARKLE_PRIVATE_KEY` | the exported Sparkle private key (`generate_keys --account agent-farm -x -`) |
 
-Running the workflow and the local script for the same version is not possible: whichever
-runs second stops at the existing tag.
+Running the workflow and the local script for the same version is not possible: the
+preflight refuses when the tag already exists on GitHub. A run that fails while publishing
+removes its tag again, so simply re-run it.
