@@ -64,3 +64,26 @@ def test_ps_and_open_are_absolute(monkeypatch):
     m = collector.ITerm2Map()
     assert m.activate("com.example.app") == (True, "")
     assert all(cmd[0].startswith("/") for cmd in calls), calls
+
+
+def test_iterm_focus_activates_the_app_before_selecting_the_session(monkeypatch):
+    """macOS ignores an app activating itself from behind another app, and only an
+    active app ordering a window front switches to that window's Space, so iTerm2 is
+    activated through Launch Services first and the session is focused second."""
+    run, calls = _fake_run({collector.OPEN: "", collector.IT2: ""})
+    monkeypatch.setattr(collector.subprocess, "run", run)
+    m = collector.ITerm2Map()
+    m.available = True
+    assert m.focus("SESSION-1", "label") == (True, "")
+    assert calls == [[collector.OPEN, "-b", collector.ITERM_BUNDLE_ID],
+                     [collector.IT2, "session", "focus", "SESSION-1"]]
+
+
+def test_iterm_focus_stops_when_activation_fails(monkeypatch):
+    run, calls = _fake_run({})                                     # open and it2 both fail
+    monkeypatch.setattr(collector.subprocess, "run", run)
+    m = collector.ITerm2Map()
+    m.available = True
+    ok, why = m.focus("SESSION-1", "label")
+    assert ok is False and why
+    assert calls == [[collector.OPEN, "-b", collector.ITERM_BUNDLE_ID]]   # no focus after a failed activation
