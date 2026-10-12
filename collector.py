@@ -282,7 +282,7 @@ class TranscriptState:
     cost_usd: float = 0.0
     queued: list = field(default_factory=list)          # [{"content", "ts"}] prompts typed while busy
     spawns: dict = field(default_factory=dict)          # agent_id -> {name, description, ts}
-    finished_agents: set = field(default_factory=set)   # teammates whose final message arrived
+    finished_agents: dict = field(default_factory=dict) # teammate name -> when its last reply arrived
     rows_seen: int = 0
     bad_rows: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -354,7 +354,7 @@ class TranscriptState:
             self.title = clean_text(row.get("customTitle")) or self.title
         elif t == "last-prompt":
             lp = clean_text(row.get("lastPrompt"))
-            if lp and not self._note_teammate_messages(lp) and not lp.startswith("<"):
+            if lp and not self._note_teammate_messages(lp, ts) and not lp.startswith("<"):
                 self.last_prompt = lp
         elif t == "user":
             self._ingest_user(row, ts)
@@ -397,7 +397,7 @@ class TranscriptState:
         msg = row.get("message") or {}
         content = msg.get("content")
         if isinstance(content, str):
-            relay = self._note_teammate_messages(content)
+            relay = self._note_teammate_messages(content, ts)
             if not row.get("isMeta") and not relay and not content.startswith("<"):
                 self.last_prompt, self.last_prompt_ts = clean_text(content), ts
                 self.last_row_kind = "prompt"
@@ -415,7 +415,7 @@ class TranscriptState:
                 self.permission_pending = False
             elif ct == "text" and not row.get("isMeta"):
                 txt = c.get("text") or ""
-                relay = self._note_teammate_messages(txt)
+                relay = self._note_teammate_messages(txt, ts)
                 if txt and not relay and not txt.startswith("<"):
                     self.last_prompt, self.last_prompt_ts = clean_text(txt), ts
                     self.last_row_kind = "prompt"
@@ -428,12 +428,16 @@ class TranscriptState:
                 "ts": ts,
             }
 
-    def _note_teammate_messages(self, text: str) -> bool:
-        """A <teammate-message teammate_id="X"> in the head's transcript means X finished.
-        Returns True if the text is such a relay (so it is not shown as the user's prompt)."""
+    def _note_teammate_messages(self, text: str, ts: Optional[float] = None) -> bool:
+        """A <teammate-message teammate_id="X"> in the head's transcript means X reported
+        back at that moment. Teammates stay resident and can be given more work, so the
+        time is kept, not just the fact: X counts as finished only until its own transcript
+        changes again. Returns True if the text is such a relay (so it is not shown as the
+        user's prompt)."""
         if text and "teammate-message" in text:
+            when = ts or time.time()
             for name in _TEAMMATE_RE.findall(text):
-                self.finished_agents.add(name)
+                self.finished_agents[name] = max(when, self.finished_agents.get(name, 0.0))
             return True
         return False
 
@@ -844,8 +848,8 @@ class Collector:
                     a.status = "archived"
                 elif tail is None:
                     a.status = "starting"
-                elif inst.transcript and a.name in inst.transcript.finished_agents:
-                    a.status = "dormant"         # finished; idle on its mailbox, reusable by the head
+                elif inst.transcript and tail.mtime <= inst.transcript.finished_agents.get(a.name, -1.0) + 1.0:
+                    a.status = "dormant"         # reported back and silent since; reusable by the head
                 else:
                     age = now - tail.mtime
                     mid_work = tail.last_row_kind in ("tool_use", "tool_result", "prompt")
