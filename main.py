@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import signal
 import sys
@@ -41,7 +42,9 @@ errors = ErrorCounter()
 REFRESH_S = 1.0
 USAGE_SCAN_S = 10.0
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
-NARROW_COLS = 110      # below this many columns the usage panel hides itself
+ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
+USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
+GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
 USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
 USAGE_METRICS = [       # (attribute on DayUsage, label, column header)
     ("out_tokens", "output tokens", "out"),
@@ -199,7 +202,7 @@ HEAD_GLYPH = "■"                      # one square per head session in the fle
 HEAD_ORDER = ("waiting", "busy", "idle", "dead", "unknown")
 
 
-def fleet_line(instances: list[Instance], ordering: Ordering, now: float, show_text: bool,
+def fleet_line(instances: list[Instance], show_text: bool,
                error_count: int, it2_ok: bool) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
     by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
@@ -255,7 +258,7 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     if not it2_ok:
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
-        lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last 10 minutes "
+        lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last {ERROR_WINDOW_S // 60} minutes "
                      f"({errors.count} since launch) — details in logs/monitor.log")
     return "\n".join(lines)
 
@@ -336,7 +339,7 @@ def _queued_summary(content: str) -> str:
     return f"message from another session ({src})" if src else "message from another session"
 
 
-def detail_text(obj, now: float, ordering: Ordering | None = None) -> Text:
+def detail_text(obj, now: float) -> Text:
     out = Text()
 
     def kv(k: str, v, style: str = ""):
@@ -622,22 +625,21 @@ class ClaudeMonitor(App):
         if show_usage is None:
             show_usage = self.settings.show_usage
         self.collector = Collector()
-        self.usage = UsageScanner(interval_s=USAGE_SCAN_S)
+        self.usage = UsageScanner()
         self.usage_metric = 0
-        # The usage panel is hidden until `u` is pressed (or --usage at launch).
-        # True/False = user's choice; None = auto by terminal width.
-        self.usage_forced: bool | None = True if show_usage else False
+        # The usage panel shows when the setting or --usage says so, and `u` toggles it.
+        self.usage_forced: bool = bool(show_usage)
         self._usage_width = 0
         self._cursor_pending = False
         self._agent_fp: dict[str, dict[str, tuple]] = {}   # head key -> subagent fingerprint
         self._strip_width = 0                               # agent strip column, recomputed per tick
         self.nodes: dict[str, TreeNode] = {}        # key -> node
         self.objects: dict[str, object] = {}        # key -> Instance | Agent
-        self.detail_forced: bool | None = None      # None = auto by width
+        self.detail_forced: bool | None = None      # None = auto by height
         self.last_snapshot_at = 0.0
         self.instances: list[Instance] = []
         logging.getLogger("monitor").addHandler(errors)
-        log.info("monitor starting (pid %s)", __import__("os").getpid())
+        log.info("monitor starting (pid %s)", os.getpid())
 
     def _handle_exception(self, error: Exception) -> None:
         """Textual swallows unhandled exceptions inside App.run(); it prints a traceback
@@ -654,7 +656,7 @@ class ClaudeMonitor(App):
                     yield Static(Text("starting…", style="dim"), id="fleet")
                     tree: Tree = AgentTree("Claude instances", id="tree", status_lookup=self._status_for_key)
                     tree.show_root = False
-                    tree.guide_depth = 3
+                    tree.guide_depth = GUIDE_DEPTH
                     yield tree
                 yield Static("", id="usage")
             yield Static("", id="detail")
@@ -682,7 +684,7 @@ class ClaudeMonitor(App):
     def _apply_detail_visibility(self) -> None:
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
         self.query_one("#detail", Static).set_class(not show, "hidden")
-        show_u = self.usage_forced if self.usage_forced is not None else self.size.width >= NARROW_COLS
+        show_u = self.usage_forced
         usage = self.query_one("#usage", Static)
         usage.set_class(not show_u, "hidden")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
@@ -729,7 +731,7 @@ class ClaudeMonitor(App):
             usage = self.query_one("#usage", Static)
         except NoMatches:
             return
-        width = max(30, (usage.size.width or 50) - 2)      # minus padding
+        width = max(30, (usage.size.width or USAGE_PANEL_WIDTH) - 2)      # minus padding
         self._usage_width = usage.size.width
         usage.update(usage_text(self.usage, self.usage_metric, width))
 
@@ -774,7 +776,7 @@ class ClaudeMonitor(App):
         base = max(8, self.settings.name_column_width)
         if depth == 0:                       # head rows render the strip separately
             return base
-        guide = (tree.guide_depth if tree is not None else 3)
+        guide = (tree.guide_depth if tree is not None else GUIDE_DEPTH)
         strip = (self._strip_width + 1) if self._strip_width else 0
         return max(8, base + strip - depth * guide)
 
@@ -956,8 +958,8 @@ class ClaudeMonitor(App):
             except Exception:
                 pass
 
-        recent = errors.recent(600)
-        self._set_status(fleet_line(instances, self.ordering, now, self.settings.show_status_text,
+        recent = errors.recent(ERROR_WINDOW_S)
+        self._set_status(fleet_line(instances, self.settings.show_status_text,
                                     recent, self.collector.iterm.available),
                          fleet_tooltip(instances, self.ordering, recent, self.collector.iterm.available))
         self._refresh_detail()
@@ -977,7 +979,7 @@ class ClaudeMonitor(App):
             detail.update(Text("select an instance", style="dim"))
             return
         obj = self.objects.get(node.data)
-        detail.update(detail_text(obj, time.time(), self.ordering) if obj else Text(""))
+        detail.update(detail_text(obj, time.time()) if obj else Text(""))
 
     # ---- actions ----------------------------------------------------------
     def action_settings(self) -> None:
@@ -1030,7 +1032,6 @@ class ClaudeMonitor(App):
 
 if __name__ == "__main__":
     import argparse
-    import os
     ap = argparse.ArgumentParser(description="Monitor the Claude Code instances on this Mac.")
     ap.add_argument("--order", default=os.environ.get("CLAUDE_MONITOR_ORDER") or None,
                     choices=[o.name for o in ORDERINGS],

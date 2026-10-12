@@ -22,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from apppaths import log_dir
@@ -51,12 +51,10 @@ class ErrorCounter(logging.Handler):
     def __init__(self):
         super().__init__(level=logging.WARNING)
         self.count = 0
-        self.last = ""
         self._when: list[float] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         self.count += 1
-        self.last = record.getMessage()[:120]
         self._when.append(record.created)
         del self._when[:-500]
 
@@ -272,18 +270,15 @@ class TranscriptState:
     last_text_ts: Optional[float] = None
     last_ts: Optional[float] = None
     last_row_kind: str = ""            # 'text' | 'tool_use' | 'tool_result' | 'prompt' | other
-    stop_reason: str = ""
     pending_tools: dict = field(default_factory=dict)   # tool_use_id -> (name, summary, ts)
     permission_pending: bool = False
     permission_ts: Optional[float] = None
     away_summary: str = ""
     context_tokens: int = 0
-    output_tokens: int = 0
     cost_usd: float = 0.0
     queued: list = field(default_factory=list)          # [{"content", "ts"}] prompts typed while busy
     spawns: dict = field(default_factory=dict)          # agent_id -> {name, description, ts}
     finished_agents: dict = field(default_factory=dict) # teammate name -> when its last reply arrived
-    rows_seen: int = 0
     bad_rows: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -340,7 +335,6 @@ class TranscriptState:
         if not isinstance(row, dict):
             self.bad_rows += 1
             return
-        self.rows_seen += 1
         t = row.get("type")
         ts = _parse_ts(row.get("timestamp"))
         if ts:
@@ -450,8 +444,6 @@ class TranscriptState:
         eff = row.get("perTurnEffort") or row.get("effort")
         if isinstance(eff, str) and eff:
             self.effort = eff
-        if msg.get("stop_reason"):
-            self.stop_reason = msg["stop_reason"]
         usage = msg.get("usage") or {}
         if usage:
             self.context_tokens = (
@@ -459,7 +451,6 @@ class TranscriptState:
                 + int(usage.get("cache_read_input_tokens") or 0)
                 + int(usage.get("cache_creation_input_tokens") or 0)
             )
-            self.output_tokens = int(usage.get("output_tokens") or 0)
         content = msg.get("content")
         if not isinstance(content, list):            # a plain-string assistant message
             if isinstance(content, str) and content.strip():
@@ -553,20 +544,14 @@ class Instance:
     cwd: str = ""
     kind: str = ""
     entrypoint: str = ""             # "cli" for a terminal, "claude-desktop" for the Claude app
-    host_session_id: str = ""        # the desktop app's own id for the conversation
-    version: str = ""
     started_at: Optional[float] = None
     status: str = "unknown"          # busy | idle | waiting | dead | unknown
     status_detail: str = ""
     status_since: Optional[float] = None
     alive: bool = True
     tty: str = ""
-    cpu: float = 0.0
-    rss_mb: float = 0.0
     iterm_session: str = ""
     iterm_title: str = ""
-    iterm_tab: str = ""
-    iterm_window: str = ""
     transcript: Optional[TranscriptState] = None
     agents: list[Agent] = field(default_factory=list)
     git: dict = field(default_factory=dict)      # from git_info(cwd); {} when not a repository
@@ -686,7 +671,6 @@ class ITerm2Map:
         return self.by_tty.get(tty, {})
 
     @staticmethod
-    @staticmethod
     def activate(bundle_id: str, label: str = "") -> tuple[bool, str]:
         """Bring an application to the front through Launch Services (`open -b`). Unlike an
         AppleScript `activate` this needs no Automation permission, which matters once the
@@ -797,15 +781,6 @@ class Collector:
                 m[int(parts[0])] = "/dev/" + parts[1]
         return m
 
-    def _proc_info(self, inst: Instance) -> None:
-        if psutil is None:
-            return
-        try:
-            p = psutil.Process(inst.pid)
-            inst.cpu = p.cpu_percent(interval=None)
-            inst.rss_mb = p.memory_info().rss / (1024 * 1024)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
 
     def _agents_for(self, inst: Instance, transcript: Optional[Path]) -> list[Agent]:
         agents: list[Agent] = []
@@ -917,8 +892,6 @@ class Collector:
                 cwd=reg.get("cwd") or "",
                 kind=reg.get("kind") or "",
                 entrypoint=reg.get("entrypoint") or "",
-                host_session_id=reg.get("hostSessionId") or "",
-                version=reg.get("version") or "",
                 started_at=(reg.get("startedAt") or 0) / 1000 or None,
                 status=reg.get("status") or "unknown",
                 status_since=(reg.get("statusUpdatedAt") or 0) / 1000 or None,
@@ -981,13 +954,10 @@ class Collector:
 
     def _fill_instance(self, inst: Instance, ttys: dict[int, str], now: float) -> None:
         if inst.alive:
-            self._proc_info(inst)
             inst.tty = ttys.get(inst.pid, "")
             it = self.iterm.lookup(inst.tty)
             inst.iterm_session = it.get("id", "")
             inst.iterm_title = clean_text(it.get("title") or it.get("name"))
-            inst.iterm_tab = str(it.get("tab_id", ""))
-            inst.iterm_window = it.get("window_id", "")
         tpath = self._find_transcript(inst.session_id, inst.cwd) if inst.session_id else None
         if tpath:
             inst.transcript = tail_for(tpath)
@@ -997,11 +967,11 @@ class Collector:
                 inst.cwd = inst.transcript.cwd
         if inst.alive and inst.cwd:
             inst.git = git_info(inst.cwd)
-        self._refine_status(inst, now)
+        self._refine_status(inst)
         inst.agents = self._agents_for(inst, tpath)
 
     @staticmethod
-    def _refine_status(inst: Instance, now: float) -> None:
+    def _refine_status(inst: Instance) -> None:
         """Turn busy/idle into busy/idle/waiting using transcript evidence."""
         t = inst.transcript
         if not inst.alive or t is None:
