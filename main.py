@@ -33,7 +33,7 @@ from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instanc
                        setup_logging)
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
-from usage import UsageScanner, fmt_count
+from usage import WINDOW_DAYS, UsageScanner, fmt_count
 
 log = logging.getLogger("monitor.app")
 errors = ErrorCounter()
@@ -42,7 +42,7 @@ REFRESH_S = 1.0
 USAGE_SCAN_S = 10.0
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
 NARROW_COLS = 110      # below this many columns the usage panel hides itself
-USAGE_DAYS = 14
+USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
 USAGE_METRICS = [       # (attribute on DayUsage, label, column header)
     ("out_tokens", "output tokens", "out"),
     ("in_tokens", "input tokens incl. cache", "in"),

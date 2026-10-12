@@ -30,6 +30,10 @@ CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 HISTORY = CLAUDE_DIR / "history.jsonl"
 
+WINDOW_DAYS = 14                    # what the panel shows; older files are never read
+CHUNK_BYTES = 8 * 1024 * 1024       # transcripts are read in slices, never whole (one here is 89 MB)
+WARN_EVERY_S = 900                  # per-file read failures are logged at most this often
+
 log = logging.getLogger("monitor.usage")
 
 _NEEDLES = (b'"usage"', b'"cost-state"')
@@ -84,6 +88,7 @@ class UsageScanner:
         self._publish_lock = threading.Lock()
         self._files: dict[str, _FileState] = {}
         self._history = _FileState()
+        self._warned: dict[str, float] = {}
         self._last_scan = 0.0
         self.last_scan_duration = 0.0
         self.scanned_once = False
@@ -111,21 +116,34 @@ class UsageScanner:
         paths = glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")) + \
             glob.glob(str(PROJECTS_DIR / "*" / "*" / "subagents" / "*.jsonl"))
         self.file_count = len(paths)
-        for p in paths:
-            try:
-                changed |= self._scan_transcript(p)
-            except Exception as e:
-                log.warning("usage scan failed for %s: %r", p, e)
+        changed |= self._scan_paths(paths)
         try:
             changed |= self._scan_history()
         except Exception as e:
-            log.warning("history scan failed: %r", e)
+            self._warn(str(HISTORY), e)
         self.last_scan_duration = time.time() - t0
         if not self.scanned_once:
             log.info("usage: first scan of %d transcripts took %.2fs", len(paths), self.last_scan_duration)
         self._publish()
         self.scanned_once = True
         return changed
+
+    def _scan_paths(self, paths: list[str]) -> bool:
+        changed = False
+        for p in paths:
+            try:
+                changed |= self._scan_transcript(p)
+            except Exception as e:           # unreadable or malformed file: skip it, say so rarely
+                self._warn(p, e)
+        return changed
+
+    def _warn(self, path: str, exc: Exception) -> bool:
+        now = time.time()
+        if now - self._warned.get(path, 0.0) < WARN_EVERY_S:
+            return False
+        self._warned[path] = now
+        log.warning("usage scan failed for %s: %r", path, exc)
+        return True
 
     def _publish(self) -> None:
         """Replace the readable snapshot with independent copies of the working tallies."""
@@ -159,33 +177,40 @@ class UsageScanner:
             d = self.days[date] = DayUsage(date=date)
         return d
 
-    def _read_new(self, path: str, st: _FileState) -> list[bytes]:
+    def _new_lines(self, path: str, st: _FileState):
+        """Yield the complete lines appended since the last call, reading CHUNK_BYTES at a
+        time so memory stays bounded by a slice plus one partial line. A file first seen
+        with a modification time before the window is skipped: nothing in it can reach
+        the panel, and if it is written again later only the new bytes are read."""
         try:
             s = os.stat(path)
         except FileNotFoundError:
-            return []
+            return
         if s.st_size == st.size and s.st_mtime == st.mtime:
-            return []
+            return
+        if st.size < 0 and s.st_mtime < time.time() - (WINDOW_DAYS + 1) * 86400:
+            st.offset, st.size, st.mtime = s.st_size, s.st_size, s.st_mtime
+            return
         st.size, st.mtime = s.st_size, s.st_mtime
         if s.st_size < st.offset:                    # truncated: start over
             st.offset, st.partial = 0, b""
         with open(path, "rb") as f:
             f.seek(st.offset)
-            data = f.read()
-            st.offset = f.tell()
-        lines = (st.partial + data).split(b"\n")
-        st.partial = lines.pop()
-        return lines
+            while True:
+                data = f.read(CHUNK_BYTES)
+                if not data:
+                    break
+                lines = (st.partial + data).split(b"\n")
+                st.partial = lines.pop()
+                st.offset = f.tell() - len(st.partial)
+                yield from lines
 
     def _scan_transcript(self, path: str) -> bool:
         st = self._files.get(path)
         if st is None:
             st = self._files[path] = _FileState()
-        lines = self._read_new(path, st)
-        if not lines:
-            return False
         changed = False
-        for raw in lines:
+        for raw in self._new_lines(path, st):
             if not any(n in raw for n in _NEEDLES):
                 continue
             try:
@@ -240,9 +265,8 @@ class UsageScanner:
         return changed
 
     def _scan_history(self) -> bool:
-        lines = self._read_new(str(HISTORY), self._history)
         changed = False
-        for raw in lines:
+        for raw in self._new_lines(str(HISTORY), self._history):
             try:
                 row = json.loads(raw)
             except json.JSONDecodeError:
