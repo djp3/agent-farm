@@ -27,25 +27,37 @@ Python, so day-to-day development never touches Swift or the bundle.
 
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
     ./supervisor.sh                  # runs main.py and hot-reloads it on any .py change
+    .venv/bin/python -m pytest       # the test suite (pytest is not in the requirements)
     .venv/bin/python main.py         # plain run
     .venv/bin/python main.py --usage --order activity   # one-run overrides of the saved settings
 
-From a checkout the settings file is `monitor_settings.json` next to the code (or
-`CLAUDE_MONITOR_SETTINGS`), and logs go to `logs/monitor.log` and `logs/supervisor.log`.
-`CLAUDE_MONITOR_ORDER` and `CLAUDE_MONITOR_USAGE=1` do what the flags do.
+From a checkout the settings file is `settings.json` next to the code (or
+`AGENT_FARM_SETTINGS`), and logs go to `logs/agent-farm.log` and `logs/supervisor.log`.
+`AGENT_FARM_ORDER` and `AGENT_FARM_USAGE=1` do what the flags do. The pre-rename names
+(`CLAUDE_MONITOR_*`, `monitor_settings.json`) are still read for one release; an old
+settings file is renamed in place on first load.
 
 The supervisor ignores `.venv`, `build`, `dist`, `.build` and `.sparkle-tools`, so building
 the app does not restart the monitor you are looking at. It restarts the child only; edits
 to `supervisor.py` itself need a manual restart. The child's stderr is deliberately not
 captured, because Textual draws on stderr; crashes are logged by `main.py` and exit 1.
 
-Headless checks use Textual's `run_test` and `save_screenshot`; see the tests in the
-scratchpad history for the pattern.
+The tests in `tests/` are plain pytest; the ones that drive the UI use Textual's
+`run_test` with a pinned snapshot (see `tests/test_focus_async.py` for the pattern).
 
 ## Building the app
 
-    .venv/bin/pip install -r requirements-build.txt     # PyInstaller
+    .venv/bin/pip install -r requirements-build.txt     # PyInstaller and pip-tools
     scripts/build_app.sh                                  # -> dist/agent-farm.app
+
+Dependencies are pinned exactly in `requirements.txt` and `requirements-build.txt`, and
+`requirements.lock` lists every package, indirect ones included, with the hashes of their
+files. The release workflow installs from the lock with `--require-hashes`, so what ships
+is decided by the repository, not by the package index on release day. To upgrade a
+library: bump its pin, regenerate the lock, run the tests, commit all three together:
+
+    .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe \
+        -o requirements.lock requirements.txt requirements-build.txt
 
 Steps, all in that script:
 
@@ -63,10 +75,10 @@ Steps, all in that script:
    hardened runtime (an ad-hoc signature has no team, so a hardened-runtime app could not
    load its own frameworks). `CODESIGN_IDENTITY="Developer ID Application: …"` signs for real.
 
-The host app (`macos/Sources/AgentFarm/AppDelegate.swift`) sets `COLORTERM=truecolor`,
-a UTF-8 locale and a PATH that includes Homebrew and iTerm2's `it2` for the child, maps
-`q` to quitting the app, shows a restart hint if the Python side exits with an error, and
-provides the menus. `swift run` from `macos/` works without a bundle for UI work; set
+The host app (`macos/Sources/AgentFarm/AppDelegate.swift`) sets `COLORTERM=truecolor`
+and a UTF-8 locale for the child (helpers are run by absolute path, so no PATH changes),
+quits when the Python side exits cleanly (after `q` in the monitor), shows a restart hint
+if it exits with an error, and provides the menus. `swift run` from `macos/` works without a bundle for UI work; set
 `AGENT_FARM_CORE=/path/to/executable` to choose what it runs, and Sparkle stays off because
 there is no `Info.plist`.
 
@@ -123,5 +135,6 @@ Actions tab after `VERSION` is bumped on `main`. It needs these repository secre
 | `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`, `NOTARY_KEY_P8` | an App Store Connect API key with the Developer role: id, issuer id, and the `.p8` contents |
 | `SPARKLE_PRIVATE_KEY` | the exported Sparkle private key (`generate_keys --account agent-farm -x -`) |
 
-Running the workflow and the local script for the same version is not possible: whichever
-runs second stops at the existing tag.
+Running the workflow and the local script for the same version is not possible: the
+preflight refuses when the tag already exists on GitHub. A run that fails while publishing
+removes its tag again, so simply re-run it.

@@ -4,7 +4,7 @@ Orderings for the instance list.
 An Ordering is a sequence of Tiers. An instance belongs to the first tier whose
 `match` accepts it and is sorted within that tier by `key` (ascending). Instances
 that match no tier go last. Add a new ordering by appending to ORDERINGS; the TUI
-cycles through them with the `o` key and accepts `--order NAME` on the command line.
+offers them in Settings (s) and accepts `--order NAME` on the command line.
 
 Keys must be comparable within a tier; the helpers below turn optional timestamps
 into floats so None never breaks a sort.
@@ -50,10 +50,9 @@ def last_event_ts(i: Instance) -> Optional[float]:
 # ---- model ------------------------------------------------------------------ #
 @dataclass(frozen=True)
 class Tier:
-    name: str                                   # short label, shown in the UI
+    name: str                                   # short label, for readers of this file
     match: Callable[[Instance], bool]
     key: Callable[[Instance], Any]              # ascending within the tier
-    note: str = ""                              # what the within-tier order means
 
 
 @dataclass(frozen=True)
@@ -70,10 +69,6 @@ class Ordering:
             except Exception:
                 continue
         return len(self.tiers)
-
-    def tier_of(self, i: Instance) -> Optional[Tier]:
-        idx = self.tier_index(i)
-        return self.tiers[idx] if idx < len(self.tiers) else None
 
     def sort_key(self, i: Instance) -> tuple:
         idx = self.tier_index(i)
@@ -114,14 +109,10 @@ ATTENTION = Ordering(
     name="attention",
     description="what needs me first: waiting → working on my latest input → recently idle → inactive",
     tiers=(
-        Tier("waiting", is_waiting, lambda i: oldest_first(i.status_since),
-             "longest wait first"),
-        Tier("working", is_busy, lambda i: newest_first(last_input_ts(i)),
-             "most recent input from me first"),
-        Tier("idle", is_idle, lambda i: newest_first(i.status_since),
-             "most recently gone idle first"),
-        Tier("inactive", is_inactive, lambda i: newest_first(i.started_at),
-             "newest first"),
+        Tier("waiting", is_waiting, lambda i: oldest_first(i.status_since)),       # longest wait first
+        Tier("working", is_busy, lambda i: newest_first(last_input_ts(i))),      # my latest input first
+        Tier("idle", is_idle, lambda i: newest_first(i.status_since)),           # most recently idle first
+        Tier("inactive", is_inactive, lambda i: newest_first(i.started_at)),     # newest first
     ),
 )
 
@@ -162,7 +153,3 @@ def get_ordering(name: str) -> Ordering:
             return o
     raise KeyError(f"unknown ordering {name!r}; choose from {[o.name for o in ORDERINGS]}")
 
-
-def next_ordering(current: Ordering) -> Ordering:
-    names = [o.name for o in ORDERINGS]
-    return ORDERINGS[(names.index(current.name) + 1) % len(ORDERINGS)]

@@ -13,7 +13,7 @@ STABILITY_THRESHOLD = 1
 # Logs: supervisor events go to logs/supervisor.log. The child's stdout/stderr are
 # left on the terminal on purpose: Textual draws the UI on *stderr*, so redirecting
 # it would send the whole display into a file. main.py logs its own crashes to
-# logs/monitor.log.
+# logs/agent-farm.log.
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 SUPERVISOR_LOG = os.path.join(LOG_DIR, "supervisor.log")
@@ -137,7 +137,7 @@ def main():
                 if rc == 0:
                     log.info("child exited cleanly (rc=0)")
                 else:
-                    log.error("child exited rc=%s (its traceback is in logs/monitor.log)", rc)
+                    log.error("child exited rc=%s (its traceback is in logs/agent-farm.log)", rc)
                 print("[Supervisor] Exiting supervisor because the child process ended.")
                 break
 

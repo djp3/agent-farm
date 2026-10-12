@@ -1,16 +1,18 @@
 """
 agent-farm — a Textual TUI that watches every Claude Code instance on this Mac.
 
-Head agents are top-level rows; subagents / teammates nest beneath them.
-Head agents are the tree rows; the detail pane for the highlighted row sits underneath,
-and a usage panel (tokens per day across every transcript) sits to the right of the tree.
-Keys: ↑/↓ move · enter/space fold · f focus iTerm2 tab · d detail · u usage · m metric · s settings · r refresh · q quit
+Head agents are the tree rows and their subagents / teammates nest beneath them; the detail
+pane for the highlighted row sits underneath, and a usage panel (tokens per day across every
+transcript) sits to the right of the tree.
+Keys: ↑/↓ move · enter/space fold · f bring the session forward (iTerm2 tab or Claude app) ·
+d detail · u usage · m metric · s settings · r refresh · q quit
 Instances are ordered by the Ordering chosen in Settings (see ordering.py); `--order NAME` overrides for one run.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import signal
 import sys
@@ -29,20 +31,22 @@ from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Stati
                              Tree)
 from textual.widgets.tree import TreeNode
 
-from collector import (Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
+from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
                        setup_logging)
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
-from usage import UsageScanner, fmt_count
+from usage import WINDOW_DAYS, UsageScanner, fmt_count
 
-log = logging.getLogger("monitor.app")
+log = logging.getLogger("agent_farm.app")
 errors = ErrorCounter()
 
 REFRESH_S = 1.0
 USAGE_SCAN_S = 10.0
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
-NARROW_COLS = 110      # below this many columns the usage panel hides itself
-USAGE_DAYS = 14
+ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
+USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
+GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
+USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
 USAGE_METRICS = [       # (attribute on DayUsage, label, column header)
     ("out_tokens", "output tokens", "out"),
     ("in_tokens", "input tokens incl. cache", "in"),
@@ -111,7 +115,7 @@ STATUS_STYLE = {
     "dormant": "dim #5f87ff",         # finished, resident, can be messaged again
     "stale": "#d75fd7",               # silent too long mid tool-call, likely killed
     "archived": "dim #888888",        # log only
-    "error": "#ff5f5f",               # the collector failed on this row (see logs/monitor.log)
+    "error": "#ff5f5f",               # the collector failed on this row (see the log)
 }
 
 
@@ -199,11 +203,12 @@ HEAD_GLYPH = "■"                      # one square per head session in the fle
 HEAD_ORDER = ("waiting", "busy", "idle", "dead", "unknown")
 
 
-def fleet_line(instances: list[Instance], ordering: Ordering, now: float, show_text: bool,
+def fleet_line(instances: list[Instance], show_text: bool,
                error_count: int, it2_ok: bool) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
     by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
-    circles-and-asterisks system as the rows, then order, it2 and clock in dim text.
+    circles-and-asterisks system as the rows, then red notes only when it2 is missing or
+    warnings were logged recently.
     With the status-text setting on, the counts are also spelled out."""
     live = [i for i in instances if i.alive]
     t = Text()
@@ -230,12 +235,12 @@ def fleet_line(instances: list[Instance], ordering: Ordering, now: float, show_t
         t.append("it2 missing — focus (f) unavailable", style=STATUS_STYLE["error"])
     if error_count:                      # recent problems only; the tooltip has the total
         t.append("  ")
-        t.append(f"⚠ {error_count} (logs/monitor.log)", style=STATUS_STYLE["error"])
+        t.append(f"⚠ {error_count} (see the log)", style=STATUS_STYLE["error"])
     return t
 
 
 def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool) -> str:
-    """Everything the fleet line encodes, as words (shown on mouse hover)."""
+    """Everything the fleet line encodes, plus the active ordering, as words (on hover)."""
     live = [i for i in instances if i.alive]
     counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "idle")}
     inactive = len(instances) - len(live) + sum(1 for i in live if i.status == "unknown")
@@ -255,8 +260,8 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     if not it2_ok:
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
-        lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last 10 minutes "
-                     f"({errors.count} since launch) — details in logs/monitor.log")
+        lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last {ERROR_WINDOW_S // 60} minutes "
+                     f"({errors.count} since launch) — details in the log (Monitor ▸ Open Log Folder)")
     return "\n".join(lines)
 
 
@@ -336,7 +341,7 @@ def _queued_summary(content: str) -> str:
     return f"message from another session ({src})" if src else "message from another session"
 
 
-def detail_text(obj, now: float, ordering: Ordering | None = None) -> Text:
+def detail_text(obj, now: float) -> Text:
     out = Text()
 
     def kv(k: str, v, style: str = ""):
@@ -355,7 +360,9 @@ def detail_text(obj, now: float, ordering: Ordering | None = None) -> Text:
         if i.is_app:
             kv("where", "Claude desktop app  (f brings the app forward)", "cyan")
         kv("cwd", i.cwd or "(unknown)")
-        if i.git and i.git.get("error"):
+        if i.git and i.git.get("error") == "no git":
+            kv("git", f"git not found: {GIT_INSTALL_HINT}", "yellow")
+        elif i.git and i.git.get("error"):
             kv("git", "folder not readable yet: allow agent-farm under System Settings > "
                       "Privacy & Security > Files and Folders", "yellow")
         elif i.git:
@@ -583,7 +590,7 @@ class SettingsScreen(Screen):
         self.app.pop_screen()
 
 
-class ClaudeMonitor(App):
+class AgentFarm(App):
     TITLE = "agent-farm"
     CSS = """
     Screen { layout: vertical; }
@@ -600,7 +607,7 @@ class ClaudeMonitor(App):
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("f", "focus_tab", "Focus iTerm tab"),
+        Binding("f", "focus_tab", "Bring forward"),
         Binding("d", "toggle_detail", "Detail"),
         Binding("u", "toggle_usage", "Usage"),
         Binding("m", "cycle_metric", "Metric", show=False),   # documented in the usage panel itself
@@ -611,6 +618,7 @@ class ClaudeMonitor(App):
     def __init__(self, order_name: str | None = None, show_usage: bool | None = None,
                  settings: Settings | None = None):
         super().__init__()
+        self.log_path = setup_logging()          # first, so a settings warning has somewhere to go
         self.settings = settings or Settings.load()
         try:
             self.ordering: Ordering = get_ordering(order_name or self.settings.ordering)
@@ -619,23 +627,21 @@ class ClaudeMonitor(App):
         if show_usage is None:
             show_usage = self.settings.show_usage
         self.collector = Collector()
-        self.usage = UsageScanner(interval_s=USAGE_SCAN_S)
+        self.usage = UsageScanner()
         self.usage_metric = 0
-        # The usage panel is hidden until `u` is pressed (or --usage at launch).
-        # True/False = user's choice; None = auto by terminal width.
-        self.usage_forced: bool | None = True if show_usage else False
+        # The usage panel shows when the setting or --usage says so, and `u` toggles it.
+        self.usage_forced: bool = bool(show_usage)
         self._usage_width = 0
         self._cursor_pending = False
         self._agent_fp: dict[str, dict[str, tuple]] = {}   # head key -> subagent fingerprint
         self._strip_width = 0                               # agent strip column, recomputed per tick
         self.nodes: dict[str, TreeNode] = {}        # key -> node
         self.objects: dict[str, object] = {}        # key -> Instance | Agent
-        self.detail_forced: bool | None = None      # None = auto by width
+        self.detail_forced: bool | None = None      # None = auto by height
         self.last_snapshot_at = 0.0
         self.instances: list[Instance] = []
-        self.log_path = setup_logging()
-        logging.getLogger("monitor").addHandler(errors)
-        log.info("monitor starting (pid %s)", __import__("os").getpid())
+        logging.getLogger("agent_farm").addHandler(errors)
+        log.info("monitor starting (pid %s)", os.getpid())
 
     def _handle_exception(self, error: Exception) -> None:
         """Textual swallows unhandled exceptions inside App.run(); it prints a traceback
@@ -652,7 +658,7 @@ class ClaudeMonitor(App):
                     yield Static(Text("starting…", style="dim"), id="fleet")
                     tree: Tree = AgentTree("Claude instances", id="tree", status_lookup=self._status_for_key)
                     tree.show_root = False
-                    tree.guide_depth = 3
+                    tree.guide_depth = GUIDE_DEPTH
                     yield tree
                 yield Static("", id="usage")
             yield Static("", id="detail")
@@ -667,6 +673,7 @@ class ClaudeMonitor(App):
                 pass
         self.query_one("#tree", Tree).focus()
         self._apply_detail_visibility()
+        self.collector.start()
         self.render_usage()
         self.collect()
         self.scan_usage()
@@ -679,23 +686,35 @@ class ClaudeMonitor(App):
     def _apply_detail_visibility(self) -> None:
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
         self.query_one("#detail", Static).set_class(not show, "hidden")
-        show_u = self.usage_forced if self.usage_forced is not None else self.size.width >= NARROW_COLS
+        show_u = self.usage_forced
         usage = self.query_one("#usage", Static)
         usage.set_class(not show_u, "hidden")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
             self.render_usage()
 
     # ---- data -------------------------------------------------------------
+    def _on_ui(self, fn, *args, **kwargs) -> None:
+        """Run fn on the UI thread from a worker. A worker that finishes after q finds the
+        app gone and call_from_thread raises "App is not running"; that is not an error."""
+        try:
+            self.call_from_thread(fn, *args, **kwargs)
+        except RuntimeError as e:
+            if "not running" not in str(e):
+                raise
+            log.debug("dropped a UI update after shutdown: %s", getattr(fn, "__name__", fn))
+
     @work(thread=True, exclusive=True, group="collect")
     def collect(self) -> None:
         try:
             snap = self.collector.snapshot()
         except Exception:        # keep the UI alive; details go to the log, not the screen
             log.exception("snapshot failed")
-            self.call_from_thread(self._set_status, "collector error — see logs/monitor.log")
+            self._on_ui(self._set_status, f"collector error — see {self.log_path}")
+            return
+        if snap is None:         # the previous tick is still running; this one skips its turn
             return
         try:
-            self.call_from_thread(self.apply_snapshot, snap)
+            self._on_ui(self.apply_snapshot, snap)
         except Exception:
             log.exception("apply_snapshot failed")
 
@@ -707,14 +726,14 @@ class ClaudeMonitor(App):
             log.exception("usage scan failed")
             return
         if changed or not self._usage_width:
-            self.call_from_thread(self.render_usage)
+            self._on_ui(self.render_usage)
 
     def render_usage(self) -> None:
         try:
             usage = self.query_one("#usage", Static)
         except NoMatches:
             return
-        width = max(30, (usage.size.width or 50) - 2)      # minus padding
+        width = max(30, (usage.size.width or USAGE_PANEL_WIDTH) - 2)      # minus padding
         self._usage_width = usage.size.width
         usage.update(usage_text(self.usage, self.usage_metric, width))
 
@@ -759,7 +778,7 @@ class ClaudeMonitor(App):
         base = max(8, self.settings.name_column_width)
         if depth == 0:                       # head rows render the strip separately
             return base
-        guide = (tree.guide_depth if tree is not None else 3)
+        guide = (tree.guide_depth if tree is not None else GUIDE_DEPTH)
         strip = (self._strip_width + 1) if self._strip_width else 0
         return max(8, base + strip - depth * guide)
 
@@ -941,8 +960,8 @@ class ClaudeMonitor(App):
             except Exception:
                 pass
 
-        recent = errors.recent(600)
-        self._set_status(fleet_line(instances, self.ordering, now, self.settings.show_status_text,
+        recent = errors.recent(ERROR_WINDOW_S)
+        self._set_status(fleet_line(instances, self.settings.show_status_text,
                                     recent, self.collector.iterm.available),
                          fleet_tooltip(instances, self.ordering, recent, self.collector.iterm.available))
         self._refresh_detail()
@@ -962,7 +981,7 @@ class ClaudeMonitor(App):
             detail.update(Text("select an instance", style="dim"))
             return
         obj = self.objects.get(node.data)
-        detail.update(detail_text(obj, time.time(), self.ordering) if obj else Text(""))
+        detail.update(detail_text(obj, time.time()) if obj else Text(""))
 
     # ---- actions ----------------------------------------------------------
     def action_settings(self) -> None:
@@ -986,8 +1005,7 @@ class ClaudeMonitor(App):
         self._apply_detail_visibility()
 
     def action_refresh_now(self) -> None:
-        self.collector.iterm.refresh(force=True)
-        self.collect()
+        self.collect()            # the tab map refreshes on its own thread; a tick is enough
 
     def action_focus_tab(self) -> None:
         tree = self.query_one("#tree", Tree)
@@ -1000,26 +1018,32 @@ class ClaudeMonitor(App):
             return
         label = f"{inst.name or inst.pid} (pid {inst.pid}, {'Claude app' if inst.is_app else 'tty ' + (inst.tty or '?')})"
         log.info("focus requested for %s -> iTerm session %r title %r", label, inst.iterm_session, inst.iterm_title)
+        self._focus_in_background(inst, label)
+
+    @work(thread=True, group="focus")
+    def _focus_in_background(self, inst: Instance, label: str) -> None:
+        """it2 and open can wait seconds on iTerm2; never on the thread that draws."""
         ok, why = self.collector.focus_instance(inst, label)
         if ok:
-            self.notify("brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}",
-                        timeout=2)
+            msg = "brought the Claude app forward" if inst.is_app else f"focused {inst.iterm_title or inst.name}"
+            self._on_ui(self.notify, msg, timeout=2)
         else:
-            self.notify(f"focus failed: {why[:60]} — see logs/monitor.log", severity="warning", timeout=4)
+            self._on_ui(self.notify, f"focus failed: {why[:60]} — see the log",
+                        severity="warning", timeout=4)
 
 
 if __name__ == "__main__":
     import argparse
-    import os
     ap = argparse.ArgumentParser(description="Monitor the Claude Code instances on this Mac.")
-    ap.add_argument("--order", default=os.environ.get("CLAUDE_MONITOR_ORDER") or None,
+    env = os.environ
+    ap.add_argument("--order", default=env.get("AGENT_FARM_ORDER") or env.get("CLAUDE_MONITOR_ORDER") or None,
                     choices=[o.name for o in ORDERINGS],
                     help="initial instance ordering for this run (default: the saved setting)")
     ap.add_argument("--usage", action="store_true",
-                    default=os.environ.get("CLAUDE_MONITOR_USAGE", "") not in ("", "0", "false"),
+                    default=(env.get("AGENT_FARM_USAGE") or env.get("CLAUDE_MONITOR_USAGE") or "") not in ("", "0", "false"),
                     help="start with the usage panel shown (default: the saved setting)")
     args = ap.parse_args()
-    app = ClaudeMonitor(order_name=args.order, show_usage=True if args.usage else None)
+    app = AgentFarm(order_name=args.order, show_usage=True if args.usage else None)
     try:
         app.run()
     except Exception:            # errors outside Textual's own handling (startup, driver)

@@ -22,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from apppaths import log_dir
@@ -42,7 +42,7 @@ ITERM_BUNDLE_ID = "com.googlecode.iterm2"
 CLAUDE_APP_BUNDLE_ID = "com.anthropic.claudefordesktop"
 LOG_DIR = log_dir()  # logs/ next to the code, or ~/Library/Logs/agent-farm in the app
 
-log = logging.getLogger("monitor.collector")
+log = logging.getLogger("agent_farm.collector")
 
 
 class ErrorCounter(logging.Handler):
@@ -51,12 +51,10 @@ class ErrorCounter(logging.Handler):
     def __init__(self):
         super().__init__(level=logging.WARNING)
         self.count = 0
-        self.last = ""
         self._when: list[float] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         self.count += 1
-        self.last = record.getMessage()[:120]
         self._when.append(record.created)
         del self._when[:-500]
 
@@ -65,11 +63,11 @@ class ErrorCounter(logging.Handler):
         return sum(1 for t in self._when if t >= cutoff)
 
 
-def setup_logging(filename: str = "monitor.log", level: int = logging.INFO) -> Path:
+def setup_logging(filename: str = "agent-farm.log", level: int = logging.INFO) -> Path:
     """Send everything under the 'monitor' logger to logs/<filename> (rotating, 1 MB x 3)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     path = LOG_DIR / filename
-    root = logging.getLogger("monitor")
+    root = logging.getLogger("agent_farm")
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         h = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3)
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
@@ -104,8 +102,51 @@ _git_cache: dict[str, tuple[float, dict, float]] = {}
 _git_debounce = _Debounce(every_s=900)
 
 
+# Helper programs by absolute path, so nothing is resolved through a PATH entry that a
+# user-level process could write to. git is the exception by design: Homebrew's build is
+# preferred (located by asking brew for its prefix), then Apple's, which exists on every
+# Mac but is only a stub that pops up the developer-tools installer unless the command
+# line tools are present, so it is used only when xcode-select confirms they are.
+PS = "/bin/ps"
+OPEN = "/usr/bin/open"
+XCODE_SELECT = "/usr/bin/xcode-select"
+APPLE_GIT = "/usr/bin/git"
+BREW_CANDIDATES = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")   # Apple silicon, Intel
+GIT_INSTALL_HINT = "run  xcode-select --install  for Apple's git, or  brew install git  for Homebrew's"
+_git_path: Optional[str] = None          # resolved once; "" means no usable git
+
+
+def _run_quiet(cmd: list[str], timeout: float = 5) -> str:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def find_git() -> str:
+    """Homebrew's git, else Apple's when the developer tools are installed, else ''."""
+    for brew in BREW_CANDIDATES:
+        if os.path.exists(brew):
+            prefix = _run_quiet([brew, "--prefix"])
+            cand = os.path.join(prefix, "bin", "git") if prefix else ""
+            if cand and os.access(cand, os.X_OK):
+                return cand
+    if _run_quiet([XCODE_SELECT, "-p"]) and os.access(APPLE_GIT, os.X_OK):
+        return APPLE_GIT
+    return ""
+
+
+def git_path() -> str:
+    global _git_path
+    if _git_path is None:
+        _git_path = find_git()
+        log.info("git: %s", _git_path or "not found")
+    return _git_path
+
+
 def _git(cwd: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=2)
+    r = subprocess.run([git_path(), "-C", cwd, *args], capture_output=True, text=True, timeout=2)
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
@@ -120,6 +161,9 @@ def git_info(cwd: str) -> dict:
         return hit[1]
     info: dict = {}
     ttl = GIT_TTL_S
+    if not git_path():                    # nothing to run; the detail pane says what to install
+        _git_cache[cwd] = (now, {"error": "no git"}, GIT_NO_ACCESS_TTL_S)
+        return _git_cache[cwd][1]
     try:
         root = _git(cwd, "rev-parse", "--show-toplevel")
         if root:
@@ -171,6 +215,22 @@ def _parse_ts(s: Optional[str]) -> Optional[float]:
         return None
 
 
+# C0 controls except newline and tab, DEL, C1 controls, and the Unicode bidi controls that
+# can make text render misleadingly. Everything shown comes from files another program
+# wrote, and the UI is a terminal: an assistant message containing ESC ] 52 ; ... would
+# otherwise travel through Textual untouched and rewrite the clipboard.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x80-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+
+
+def clean_text(s) -> str:
+    """Text from a transcript, registry, meta file or iTerm2, made safe to put on screen."""
+    if not s:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
+    return _CONTROL_RE.sub("", s)
+
+
 def _first_line(s: str, n: int = 160) -> str:
     s = (s or "").strip().replace("\r", "")
     s = s.split("\n", 1)[0]
@@ -210,18 +270,15 @@ class TranscriptState:
     last_text_ts: Optional[float] = None
     last_ts: Optional[float] = None
     last_row_kind: str = ""            # 'text' | 'tool_use' | 'tool_result' | 'prompt' | other
-    stop_reason: str = ""
     pending_tools: dict = field(default_factory=dict)   # tool_use_id -> (name, summary, ts)
     permission_pending: bool = False
     permission_ts: Optional[float] = None
     away_summary: str = ""
     context_tokens: int = 0
-    output_tokens: int = 0
     cost_usd: float = 0.0
     queued: list = field(default_factory=list)          # [{"content", "ts"}] prompts typed while busy
     spawns: dict = field(default_factory=dict)          # agent_id -> {name, description, ts}
-    finished_agents: set = field(default_factory=set)   # teammates whose final message arrived
-    rows_seen: int = 0
+    finished_agents: dict = field(default_factory=dict) # teammate name -> when its last reply arrived
     bad_rows: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -262,7 +319,8 @@ class TranscriptState:
                 except Exception as e:           # one malformed row must not poison the rest
                     self.bad_rows += 1
                     if _debounce.ok(("ingest", str(self.path))):
-                        log.warning("bad transcript row in %s: %r :: %.200s", self.path.name, e, raw)
+                        # Never the row itself: transcripts carry prompts and pasted text.
+                        log.warning("bad transcript row in %s: %r (%d bytes)", self.path.name, e, len(raw))
         if self.bad_rows > before and _debounce.ok(("badrows", str(self.path))):
             log.warning("%d malformed row(s) skipped in %s (total %d)",
                         self.bad_rows - before, self.path.name, self.bad_rows)
@@ -277,7 +335,6 @@ class TranscriptState:
         if not isinstance(row, dict):
             self.bad_rows += 1
             return
-        self.rows_seen += 1
         t = row.get("type")
         ts = _parse_ts(row.get("timestamp"))
         if ts:
@@ -288,10 +345,10 @@ class TranscriptState:
             self.cwd = row["cwd"]
 
         if t == "custom-title":
-            self.title = row.get("customTitle") or self.title
+            self.title = clean_text(row.get("customTitle")) or self.title
         elif t == "last-prompt":
-            lp = row.get("lastPrompt") or ""
-            if lp and not self._note_teammate_messages(lp) and not lp.startswith("<"):
+            lp = clean_text(row.get("lastPrompt"))
+            if lp and not self._note_teammate_messages(lp, ts) and not lp.startswith("<"):
                 self.last_prompt = lp
         elif t == "user":
             self._ingest_user(row, ts)
@@ -306,7 +363,7 @@ class TranscriptState:
                 self.permission_pending = False
         elif t == "system":
             if row.get("subtype") == "away_summary":
-                self.away_summary = row.get("content") or ""
+                self.away_summary = clean_text(row.get("content"))
         elif t == "cost-state":
             try:
                 self.cost_usd = float(row.get("totalCostUSD") or 0)
@@ -317,7 +374,7 @@ class TranscriptState:
             # in the row). remove: a specific item was absorbed mid-turn or deleted.
             # popAll: everything was consumed at once.
             op = row.get("operation")
-            c = row.get("content") or ""
+            c = clean_text(row.get("content"))
             if op == "enqueue":
                 self.queued.append({"content": c, "ts": ts})
             elif op == "dequeue":
@@ -334,9 +391,9 @@ class TranscriptState:
         msg = row.get("message") or {}
         content = msg.get("content")
         if isinstance(content, str):
-            relay = self._note_teammate_messages(content)
+            relay = self._note_teammate_messages(content, ts)
             if not row.get("isMeta") and not relay and not content.startswith("<"):
-                self.last_prompt, self.last_prompt_ts = content, ts
+                self.last_prompt, self.last_prompt_ts = clean_text(content), ts
                 self.last_row_kind = "prompt"
                 self.permission_pending = False
             return
@@ -352,25 +409,29 @@ class TranscriptState:
                 self.permission_pending = False
             elif ct == "text" and not row.get("isMeta"):
                 txt = c.get("text") or ""
-                relay = self._note_teammate_messages(txt)
+                relay = self._note_teammate_messages(txt, ts)
                 if txt and not relay and not txt.startswith("<"):
-                    self.last_prompt, self.last_prompt_ts = txt, ts
+                    self.last_prompt, self.last_prompt_ts = clean_text(txt), ts
                     self.last_row_kind = "prompt"
         tur = row.get("toolUseResult")
         if isinstance(tur, dict) and tur.get("status") == "teammate_spawned":
             aid = tur.get("agent_id") or tur.get("teammate_id") or ""
             self.spawns[aid.split("@")[0]] = {
-                "name": tur.get("name") or "",
+                "name": clean_text(tur.get("name")),
                 "description": "",
                 "ts": ts,
             }
 
-    def _note_teammate_messages(self, text: str) -> bool:
-        """A <teammate-message teammate_id="X"> in the head's transcript means X finished.
-        Returns True if the text is such a relay (so it is not shown as the user's prompt)."""
+    def _note_teammate_messages(self, text: str, ts: Optional[float] = None) -> bool:
+        """A <teammate-message teammate_id="X"> in the head's transcript means X reported
+        back at that moment. Teammates stay resident and can be given more work, so the
+        time is kept, not just the fact: X counts as finished only until its own transcript
+        changes again. Returns True if the text is such a relay (so it is not shown as the
+        user's prompt)."""
         if text and "teammate-message" in text:
+            when = ts or time.time()
             for name in _TEAMMATE_RE.findall(text):
-                self.finished_agents.add(name)
+                self.finished_agents[name] = max(when, self.finished_agents.get(name, 0.0))
             return True
         return False
 
@@ -383,8 +444,6 @@ class TranscriptState:
         eff = row.get("perTurnEffort") or row.get("effort")
         if isinstance(eff, str) and eff:
             self.effort = eff
-        if msg.get("stop_reason"):
-            self.stop_reason = msg["stop_reason"]
         usage = msg.get("usage") or {}
         if usage:
             self.context_tokens = (
@@ -392,11 +451,10 @@ class TranscriptState:
                 + int(usage.get("cache_read_input_tokens") or 0)
                 + int(usage.get("cache_creation_input_tokens") or 0)
             )
-            self.output_tokens = int(usage.get("output_tokens") or 0)
         content = msg.get("content")
         if not isinstance(content, list):            # a plain-string assistant message
             if isinstance(content, str) and content.strip():
-                self.last_text, self.last_text_ts = content, ts
+                self.last_text, self.last_text_ts = clean_text(content), ts
                 self.last_row_kind = "text"
             return
         for c in content:
@@ -406,18 +464,18 @@ class TranscriptState:
             if ct == "text":
                 txt = c.get("text") or ""
                 if txt.strip():
-                    self.last_text, self.last_text_ts = txt, ts
+                    self.last_text, self.last_text_ts = clean_text(txt), ts
                     self.last_row_kind = "text"
             elif ct == "tool_use":
                 name = c.get("name") or "?"
                 inp = c.get("input") or {}
-                self.pending_tools[c.get("id")] = (name, _tool_summary(name, inp), ts)
+                self.pending_tools[c.get("id")] = (clean_text(name), clean_text(_tool_summary(name, inp)), ts)
                 self.last_row_kind = "tool_use"
                 if name in ("Agent", "Task") and isinstance(inp, dict):
-                    nm = inp.get("name") or ""
+                    nm = clean_text(inp.get("name"))
                     if nm:
                         self.spawns.setdefault(nm, {}).update(
-                            {"name": nm, "description": inp.get("description") or "", "ts": ts}
+                            {"name": nm, "description": clean_text(inp.get("description")), "ts": ts}
                         )
 
     # ---- derived ----------------------------------------------------------
@@ -479,27 +537,21 @@ class Agent:
 
 @dataclass
 class Instance:
-    """A head Claude Code process (one per terminal)."""
+    """A head Claude Code process: one per terminal tab or desktop-app conversation."""
     pid: int
     session_id: str = ""
     name: str = ""
     cwd: str = ""
     kind: str = ""
     entrypoint: str = ""             # "cli" for a terminal, "claude-desktop" for the Claude app
-    host_session_id: str = ""        # the desktop app's own id for the conversation
-    version: str = ""
     started_at: Optional[float] = None
     status: str = "unknown"          # busy | idle | waiting | dead | unknown
     status_detail: str = ""
     status_since: Optional[float] = None
     alive: bool = True
     tty: str = ""
-    cpu: float = 0.0
-    rss_mb: float = 0.0
     iterm_session: str = ""
     iterm_title: str = ""
-    iterm_tab: str = ""
-    iterm_window: str = ""
     transcript: Optional[TranscriptState] = None
     agents: list[Agent] = field(default_factory=list)
     git: dict = field(default_factory=dict)      # from git_info(cwd); {} when not a repository
@@ -553,6 +605,21 @@ class ITerm2Map:
         self.by_tty: dict[str, dict] = {}
         self.available = os.path.exists(IT2)
         self._failures = 0                      # consecutive `session list` failures
+        self._lock = threading.Lock()           # one `it2 session list` at a time
+        self._thread: Optional[threading.Thread] = None
+
+    def start_background(self) -> None:
+        """Refresh the tab map on a thread of its own. `it2` can stall for seconds, and
+        that must not hold up the once-a-second collector tick, which only reads by_tty."""
+        if self._thread or not self.available:
+            return
+        self._thread = threading.Thread(target=self._loop, name="it2-refresh", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            self.refresh(force=True)
+            time.sleep(self.refresh_s)
 
     def refresh(self, force: bool = False) -> None:
         if not self.available:
@@ -560,7 +627,15 @@ class ITerm2Map:
         now = time.time()
         if not force and now - self._last < self.refresh_s:
             return
-        self._last = now
+        if not self._lock.acquire(blocking=False):      # a refresh is already running
+            return
+        try:
+            self._last = now
+            self._refresh_locked()
+        finally:
+            self._lock.release()
+
+    def _refresh_locked(self) -> None:
         try:
             r = subprocess.run(
                 [IT2, "session", "list", "--json"],
@@ -596,13 +671,12 @@ class ITerm2Map:
         return self.by_tty.get(tty, {})
 
     @staticmethod
-    @staticmethod
     def activate(bundle_id: str, label: str = "") -> tuple[bool, str]:
         """Bring an application to the front through Launch Services (`open -b`). Unlike an
-        AppleScript `activate` this needs no Automation permission, which matters once the
-        monitor runs as its own app rather than inside iTerm2."""
+        AppleScript `activate` this needs no Automation permission, which matters now that
+        agent-farm is its own app rather than a TUI inside iTerm2."""
         try:
-            r = subprocess.run(["open", "-b", bundle_id], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([OPEN, "-b", bundle_id], capture_output=True, text=True, timeout=5)
         except Exception as e:
             log.exception("focus %s: open -b %s failed to run", label, bundle_id)
             return False, repr(e)
@@ -650,6 +724,13 @@ class Collector:
     def __init__(self):
         self.iterm = ITerm2Map()
         self._transcript_paths: dict[str, Path] = {}
+        # Textual's "exclusive" thread workers are only flagged as cancelled, they keep
+        # running, so a slow tick would otherwise overlap the next ones over shared state.
+        self._busy = threading.Lock()
+
+    def start(self) -> None:
+        """Begin background work the app needs: the iTerm2 tab map on its own thread."""
+        self.iterm.start_background()
 
     # ---- helpers ----------------------------------------------------------
     @staticmethod
@@ -686,7 +767,7 @@ class Collector:
             return {}
         try:
             out = subprocess.run(
-                ["ps", "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
+                [PS, "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
                 capture_output=True, text=True, timeout=2,
             ).stdout
         except Exception as e:
@@ -700,15 +781,6 @@ class Collector:
                 m[int(parts[0])] = "/dev/" + parts[1]
         return m
 
-    def _proc_info(self, inst: Instance) -> None:
-        if psutil is None:
-            return
-        try:
-            p = psutil.Process(inst.pid)
-            inst.cpu = p.cpu_percent(interval=None)
-            inst.rss_mb = p.memory_info().rss / (1024 * 1024)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
 
     def _agents_for(self, inst: Instance, transcript: Optional[Path]) -> list[Agent]:
         agents: list[Agent] = []
@@ -728,10 +800,10 @@ class Collector:
                 tail = tail_for(jsonl) if jsonl.exists() else None
                 a = Agent(
                     agent_id=agent_id,
-                    name=meta.get("name") or meta.get("agentType") or agent_id,   # unnamed agents show their type
-                    agent_type=meta.get("agentType") or "",
-                    description=meta.get("description") or "",
-                    model=meta.get("model") or "",
+                    name=clean_text(meta.get("name") or meta.get("agentType")) or agent_id,   # unnamed agents show their type
+                    agent_type=clean_text(meta.get("agentType")),
+                    description=clean_text(meta.get("description")),
+                    model=clean_text(meta.get("model")),
                     color=meta.get("color") or "",
                     transcript=tail,
                 )
@@ -751,8 +823,8 @@ class Collector:
                     a.status = "archived"
                 elif tail is None:
                     a.status = "starting"
-                elif inst.transcript and a.name in inst.transcript.finished_agents:
-                    a.status = "dormant"         # finished; idle on its mailbox, reusable by the head
+                elif inst.transcript and tail.mtime <= inst.transcript.finished_agents.get(a.name, -1.0) + 1.0:
+                    a.status = "dormant"         # reported back and silent since; reusable by the head
                 else:
                     age = now - tail.mtime
                     mid_work = tail.last_row_kind in ("tool_use", "tool_result", "prompt")
@@ -778,9 +850,9 @@ class Collector:
                         continue
                     agents.append(Agent(
                         agent_id=m.get("agentId") or m.get("name") or "?",
-                        name=m.get("name") or "?",
-                        agent_type=m.get("agentType") or "",
-                        description=f"teammate ({m.get('backendType', '')})",
+                        name=clean_text(m.get("name")) or "?",
+                        agent_type=clean_text(m.get("agentType")),
+                        description=clean_text(f"teammate ({m.get('backendType', '')})"),
                         status="running" if inst.alive else "archived",
                         archived=not inst.alive,
                         started_ts=(m.get("joinedAt") or 0) / 1000 or None,
@@ -791,8 +863,17 @@ class Collector:
         return agents
 
     # ---- main entry -------------------------------------------------------
-    def snapshot(self) -> list[Instance]:
-        self.iterm.refresh()
+    def snapshot(self) -> Optional[list[Instance]]:
+        """One pass over the registry, transcripts and processes. Returns None when the
+        previous pass is still running, so callers simply skip that tick."""
+        if not self._busy.acquire(blocking=False):
+            return None
+        try:
+            return self._snapshot_locked()
+        finally:
+            self._busy.release()
+
+    def _snapshot_locked(self) -> list[Instance]:
         instances: dict[int, Instance] = {}
         now = time.time()
 
@@ -807,12 +888,10 @@ class Collector:
             inst = Instance(
                 pid=pid,
                 session_id=reg.get("sessionId") or "",
-                name=reg.get("name") or "",
+                name=clean_text(reg.get("name")),
                 cwd=reg.get("cwd") or "",
                 kind=reg.get("kind") or "",
                 entrypoint=reg.get("entrypoint") or "",
-                host_session_id=reg.get("hostSessionId") or "",
-                version=reg.get("version") or "",
                 started_at=(reg.get("startedAt") or 0) / 1000 or None,
                 status=reg.get("status") or "unknown",
                 status_since=(reg.get("statusUpdatedAt") or 0) / 1000 or None,
@@ -823,26 +902,15 @@ class Collector:
             instances[pid] = inst
 
         # Claude processes not in the registry (older builds, odd entrypoints).
-        if psutil is not None:
-            for p in psutil.process_iter(["pid", "name", "cmdline", "create_time", "cwd"]):
-                try:
-                    if p.info["name"] != "claude" or p.info["pid"] in instances:
-                        continue
-                    cmd = p.info["cmdline"] or []
-                    inst = Instance(pid=p.info["pid"], kind="unregistered",
-                                    started_at=p.info["create_time"], cwd=p.info["cwd"] or "")
-                    if "-n" in cmd:
-                        inst.name = cmd[cmd.index("-n") + 1] if cmd.index("-n") + 1 < len(cmd) else ""
-                    instances[inst.pid] = inst
-                except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
-                    continue
+        for inst in self._unregistered(set(instances)):
+            instances[inst.pid] = inst
 
         ttys = self._ttys_for([i.pid for i in instances.values() if i.alive])
         for inst in instances.values():
             try:
                 self._fill_instance(inst, ttys, now)
             except Exception as e:               # one broken instance must not blank the others
-                inst.status_detail = "collector error (see logs/monitor.log)"
+                inst.status_detail = "collector error (see the log)"
                 if _debounce.ok(("instance", inst.pid)):
                     log.exception("collecting pid=%s name=%r failed: %r", inst.pid, inst.name, e)
 
@@ -856,15 +924,40 @@ class Collector:
             return self.iterm.focus_app(label)
         return self.iterm.focus(inst.iterm_session, label)
 
+    @staticmethod
+    def _unregistered(known: set[int]) -> list[Instance]:
+        """`claude` processes with no registry entry. Only the name is read for every
+        process; command line and cwd are read per claude process, each under its own
+        guard, because macOS refuses the command line of some system processes with a
+        plain PermissionError that psutil does not translate. A failure here costs at
+        most this supplement, never the registered sessions."""
+        if psutil is None:
+            return []
+        found: list[Instance] = []
+        try:
+            for p in psutil.process_iter(["pid", "name"]):
+                if p.info["name"] != "claude" or p.info["pid"] in known:
+                    continue
+                try:
+                    cmd = p.cmdline() or []
+                    inst = Instance(pid=p.info["pid"], kind="unregistered",
+                                    started_at=p.create_time(), cwd=p.cwd() or "")
+                    if "-n" in cmd and cmd.index("-n") + 1 < len(cmd):
+                        inst.name = cmd[cmd.index("-n") + 1]
+                    found.append(inst)
+                except Exception:                # gone, unreadable, odd argv: skip this one
+                    continue
+        except Exception as e:
+            if _debounce.ok("psutil-scan"):
+                log.warning("process scan failed: %r", e)
+        return found
+
     def _fill_instance(self, inst: Instance, ttys: dict[int, str], now: float) -> None:
         if inst.alive:
-            self._proc_info(inst)
             inst.tty = ttys.get(inst.pid, "")
             it = self.iterm.lookup(inst.tty)
             inst.iterm_session = it.get("id", "")
-            inst.iterm_title = it.get("title") or it.get("name") or ""
-            inst.iterm_tab = str(it.get("tab_id", ""))
-            inst.iterm_window = it.get("window_id", "")
+            inst.iterm_title = clean_text(it.get("title") or it.get("name"))
         tpath = self._find_transcript(inst.session_id, inst.cwd) if inst.session_id else None
         if tpath:
             inst.transcript = tail_for(tpath)
@@ -874,11 +967,11 @@ class Collector:
                 inst.cwd = inst.transcript.cwd
         if inst.alive and inst.cwd:
             inst.git = git_info(inst.cwd)
-        self._refine_status(inst, now)
+        self._refine_status(inst)
         inst.agents = self._agents_for(inst, tpath)
 
     @staticmethod
-    def _refine_status(inst: Instance, now: float) -> None:
+    def _refine_status(inst: Instance) -> None:
         """Turn busy/idle into busy/idle/waiting using transcript evidence."""
         t = inst.transcript
         if not inst.alive or t is None:
@@ -929,6 +1022,7 @@ STATUS_GLYPH = {
 
 if __name__ == "__main__":
     c = Collector()
+    c.iterm.refresh(force=True)      # the app refreshes this on a thread; the dump is one-shot
     for inst in c.snapshot():
         print(f"{STATUS_GLYPH.get(inst.status, '?')} [{inst.pid}] {inst.name or '(unnamed)'}  "
               f"{inst.project}{'@' + inst.branch if inst.branch else ''}  {inst.status} {fmt_age(inst.status_since)}  "
