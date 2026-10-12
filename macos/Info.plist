@@ -26,8 +26,6 @@
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>agent-farm brings the iTerm2 tab or the Claude window of the selected session to the front.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

@@ -3,8 +3,8 @@
 #
 # Built by scripts/build_app.sh into dist/python/agent-farm-core/ (onedir). The Swift
 # app copies that folder into agent-farm.app/Contents/Resources and runs
-# agent-farm-core inside its SwiftTerm view. Nothing is signed here: release.sh
-# signs the whole bundle inside-out afterwards.
+# agent-farm-core inside its SwiftTerm view. Nothing is signed here: build_app.sh
+# signs the whole bundle inside-out afterwards (scripts/sign_app.sh).
 import os
 from PyInstaller.utils.hooks import collect_all
 

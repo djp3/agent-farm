@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
     private var coreRunning = false
+    /// Set by Restart Monitor; consumed when the old process has actually gone away.
+    private var restartRequested = false
 
     private let defaults = UserDefaults.standard
     private var fontSize: CGFloat {
@@ -66,8 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     }
 
     private func setupUpdater() {
-        // Only from a real bundle with a feed URL; `swift run` during development has neither.
-        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
+        guard !isDevelopmentRun else { return }
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     }
 
@@ -101,9 +102,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     // MARK: - the Python core
 
+    /// True for `swift run` during development; the assembled bundle carries an Info.plist
+    /// with a Sparkle feed, a release build never runs without one.
+    private var isDevelopmentRun: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil
+    }
+
     private func coreExecutable() -> String? {
         // AGENT_FARM_CORE lets a `swift run` during development point at any executable.
-        if let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"], !p.isEmpty { return p }
+        // A release build ignores it: the environment must not choose what the signed app runs.
+        if isDevelopmentRun, let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"], !p.isEmpty {
+            return p
+        }
         guard let res = Bundle.main.resourceURL else { return nil }
         let p = res.appendingPathComponent("agent-farm-core/agent-farm-core").path
         return FileManager.default.isExecutableFile(atPath: p) ? p : nil
@@ -112,10 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     private func childEnvironment() -> [String] {
         // TERM, COLORTERM=truecolor (Textual needs it for 24-bit color), LANG, HOME, USER...
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color", trueColor: true)
-        // Finder launches apps with a bare PATH; the monitor shells out to it2, ps, git and osascript.
-        let inherited = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/Applications/iTerm.app/Contents/Resources/utilities"]
-        env.append("PATH=" + (extra + [inherited]).joined(separator: ":"))
+        // The monitor runs it2, ps, open and git by absolute path (git is located through
+        // brew or xcode-select), so the child only needs the PATH it was launched with.
+        env.append("PATH=" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
         env.append("TERM_PROGRAM=agent-farm")
         if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
             env.append("AGENT_FARM_VERSION=\(v)")
@@ -134,12 +143,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     }
 
     @objc func restartCore(_ sender: Any?) {
-        if coreRunning {
-            terminal.terminate()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.startCore() }
-        } else {
-            startCore()
-        }
+        guard coreRunning else { startCore(); return }
+        // Only stop it here. The monitor exits cleanly on SIGTERM, and SwiftTerm ignores a
+        // new startProcess until the old session has wound down, so the relaunch happens in
+        // processTerminated once that is true.
+        restartRequested = true
+        terminal.terminate()
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
@@ -156,12 +165,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         coreRunning = false
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            if self.restartRequested {       // Restart Monitor: the clean exit was ours
+                self.restartRequested = false
+                self.startCore()
+                return
+            }
             if exitCode == 0 {               // the user pressed q inside the monitor
                 NSApp.terminate(nil)
                 return
             }
             let code = exitCode.map(String.init) ?? "?"
-            let log = Self.logDir.appendingPathComponent("monitor.log").path
+            let log = Self.logDir.appendingPathComponent("agent-farm.log").path
             self.terminal.feed(text: "\r\n\u{1b}[31m  agent-farm-core exited with code \(code)\u{1b}[0m\r\n"
                                + "  details: \(log)\r\n  \u{2318}R restarts the monitor, \u{2318}Q quits.\r\n")
         }
@@ -279,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     @objc func revealSettings(_ sender: Any?) {
         try? FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
-        let file = Self.dataDir.appendingPathComponent("monitor_settings.json")
+        let file = Self.dataDir.appendingPathComponent("settings.json")
         if FileManager.default.fileExists(atPath: file.path) {
             NSWorkspace.shared.activateFileViewerSelecting([file])
         } else {

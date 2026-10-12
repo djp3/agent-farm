@@ -8,6 +8,7 @@ __pycache__/
 logs/
 
 # per-user choices made in the Settings panel
+settings.json
 monitor_settings.json
 
 # editor / OS noise
