@@ -30,6 +30,8 @@ tab-focus key.
 
 From top to bottom:
 
+- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
+  Dock, Mission Control and the window switcher show whether the farm needs you.
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
 - **The tree**: one row per head session, ordered so that what needs you is at the top,
