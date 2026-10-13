@@ -45,6 +45,11 @@ USAGE_SCAN_S = 10.0
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
+# Terminal title: the Mac app shows it in its title bar, iTerm2 in its tab. The in-app
+# header keeps the plain TITLE because terminal fonts render emoji unevenly. After the
+# name, one chicken per live session that is not idle (busy or waiting).
+WINDOW_TITLE = "🌾 agent-farm"
+CHICKEN = "🐓"
 GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
 USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
 USAGE_METRICS = [       # (attribute on DayUsage, label, column header)
@@ -452,6 +457,17 @@ def detail_text(obj, now: float) -> Text:
     return out
 
 
+def title_sequence(title: str) -> str:
+    """OSC 0 sets the terminal's window title; Textual never sets one itself. An empty
+    title hands the choice back to the terminal."""
+    return f"\x1b]0;{title}\x07"
+
+
+def window_title(instances: list[Instance]) -> str:
+    n = sum(1 for i in instances if i.alive and i.status != "idle")
+    return f"{WINDOW_TITLE} {CHICKEN * n}" if n else WINDOW_TITLE
+
+
 def _bar(frac: float, width: int) -> str:
     cells = max(0.0, min(1.0, frac)) * width
     full = int(cells)
@@ -635,6 +651,7 @@ class AgentFarm(App):
         self._cursor_pending = False
         self._agent_fp: dict[str, dict[str, tuple]] = {}   # head key -> subagent fingerprint
         self._strip_width = 0                               # agent strip column, recomputed per tick
+        self._window_title: str | None = None               # last title sent to the terminal
         self.nodes: dict[str, TreeNode] = {}        # key -> node
         self.objects: dict[str, object] = {}        # key -> Instance | Agent
         self.detail_forced: bool | None = None      # None = auto by height
@@ -673,6 +690,7 @@ class AgentFarm(App):
                 pass
         self.query_one("#tree", Tree).focus()
         self._apply_detail_visibility()
+        self._set_window_title(WINDOW_TITLE)
         self.collector.start()
         self.render_usage()
         self.collect()
@@ -682,6 +700,20 @@ class AgentFarm(App):
 
     def on_resize(self) -> None:
         self._apply_detail_visibility()
+
+    def _set_window_title(self, title: str) -> None:
+        driver = self._driver
+        if driver is None or title == self._window_title:   # no escape on every tick
+            return
+        try:
+            driver.write(title_sequence(title))
+            self._window_title = title
+        except Exception:                 # headless, or already out of application mode
+            log.debug("window title not set", exc_info=True)
+
+    def exit(self, *args, **kwargs) -> None:
+        self._set_window_title("")        # an iTerm2 tab gets its own title back
+        super().exit(*args, **kwargs)
 
     def _apply_detail_visibility(self) -> None:
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
@@ -964,6 +996,7 @@ class AgentFarm(App):
         self._set_status(fleet_line(instances, self.settings.show_status_text,
                                     recent, self.collector.iterm.available),
                          fleet_tooltip(instances, self.ordering, recent, self.collector.iterm.available))
+        self._set_window_title(window_title(instances))
         self._refresh_detail()
 
     # ---- detail pane ------------------------------------------------------

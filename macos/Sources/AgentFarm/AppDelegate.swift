@@ -23,6 +23,8 @@ enum Theme {
 /// SwiftTerm view and wires Sparkle for updates. Everything the monitor does still
 /// happens in Python; this file only provides the window, the pty and the menus.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, LocalProcessTerminalViewDelegate {
+    /// Shown until the monitor sets its own title (the same text, via OSC 0) and whenever it clears it.
+    private let defaultTitle = "🌾 agent-farm"
     private var window: NSWindow!
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
@@ -76,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "agent-farm"
+        w.title = defaultTitle
         w.minSize = NSSize(width: 520, height: 260)
         w.tabbingMode = .disallowed
         w.backgroundColor = Theme.background
@@ -156,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        DispatchQueue.main.async { [weak self] in self?.window.title = title.isEmpty ? "agent-farm" : title }
+        DispatchQueue.main.async { [weak self] in self?.window.title = title.isEmpty ? self?.defaultTitle ?? "" : title }
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
