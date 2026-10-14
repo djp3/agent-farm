@@ -30,6 +30,20 @@ def test_reply_parses_into_ordered_windows_and_skips_empty_ones():
     assert (rep.plan, rep.fetched_at, rep.error) == ("max", 1000.0, "")
 
 
+def test_model_scoped_week_comes_from_the_limits_list():
+    scoped = {"kind": "weekly_scoped", "group": "weekly", "percent": 95, "severity": "critical",
+              "resets_at": "2026-10-17T07:00:00Z",
+              "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}
+    data = dict(REPLY, limits=[{"kind": "session", "percent": 3}, scoped, {"kind": "weekly_scoped"},
+                               dict(scoped, scope={"model": {"display_name": "Opus"}})])
+    data["seven_day_opus"] = {"utilization": 10, "resets_at": None}
+    rep = parse_report(data, "max", now=1.0)
+    assert [(w.label, int(w.used_pct)) for w in rep.windows] == [
+        ("session", 42), ("week", 15), ("week · opus", 10), ("week · fable", 95)]   # no duplicate opus
+    assert rep.windows[-1].resets_at == datetime(2026, 10, 17, 7, tzinfo=timezone.utc)
+    assert main.limits_text(rep, True, 48).plain.splitlines()[-1].startswith("week · fable")
+
+
 def test_odd_replies_degrade_without_crashing():
     assert parse_report({"foo": 1}, "", 1.0).error
     assert parse_report({"five_hour": {"utilization": 250}}, "", 1.0).windows[0].used_pct == 100.0
