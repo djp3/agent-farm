@@ -17,6 +17,7 @@ import re
 import signal
 import sys
 import time
+import time
 from datetime import datetime
 
 from rich.style import Style
@@ -33,6 +34,7 @@ from textual.widgets.tree import TreeNode
 
 from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
                        setup_logging)
+from limits import LimitsReport, PlanLimits
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
 from usage import WINDOW_DAYS, UsageScanner, fmt_count
@@ -42,6 +44,7 @@ errors = ErrorCounter()
 
 REFRESH_S = 1.0
 USAGE_SCAN_S = 10.0
+LIMITS_POLL_S = 300.0   # plan-limit poll: panel open, setting on, and at least one session busy
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
@@ -479,7 +482,72 @@ def _bar(frac: float, width: int) -> str:
     return s.ljust(width)
 
 
-def usage_text(scanner: UsageScanner, metric_idx: int, width: int) -> Text:
+def _limit_bar(pct: float, width: int) -> Text:
+    """A budget bar: the used share in green, orange from 75% and red from 90%, over a dim
+    track so the unused share stays visible (the percent beside it says the same)."""
+    hue = STATUS_STYLE["error"] if pct >= 90 else STATUS_STYLE["waiting"] if pct >= 75 else BAR_HUE_TODAY
+    filled = _bar(pct / 100, width).rstrip()
+    t = Text()
+    t.append(filled, style=hue)
+    t.append("·" * (width - len(filled)), style="dim")
+    return t
+
+
+def fmt_reset(at: datetime | None, now: datetime | None = None) -> str:
+    """'resets 3:12 PM' today, 'resets Thu 10 AM' on another day, in local time."""
+    if at is None:
+        return ""
+    local = at.astimezone()
+    now = now or datetime.now().astimezone()
+    h12 = local.hour % 12 or 12
+    ampm = "AM" if local.hour < 12 else "PM"
+    if local.date() == now.date():
+        return f"resets {h12}:{local.minute:02d} {ampm}"
+    return f"resets {local:%a} {h12} {ampm}"
+
+
+def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float | None = None,
+                polling: bool = True) -> Text:
+    """The plan-limit block of the usage panel: what /usage shows in Claude Code, one bar per
+    window. Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
+    Not polling (no session busy): the age keeps growing, so the header says it is paused."""
+    t = Text()
+    if not enabled:
+        t.append("plan limits · off  (s: Settings)\n", style="dim")
+        return t
+    rep = rep or LimitsReport()
+    now = now or time.time()
+    head = "plan limits"
+    if rep.plan:
+        head += f" · {rep.plan}"
+    if rep.fetched_at:
+        head += f" · {fmt_age(rep.fetched_at, now)} ago"
+        if not polling:
+            head += " · paused"
+    elif not rep.error:
+        head += " · fetching…"
+    t.append(head + "\n", style="dim")
+    if rep.error:
+        t.append(f"unavailable: {rep.error}\n", style="dim" if rep.windows else STATUS_STYLE["error"])
+    if not rep.windows:
+        return t
+    label_w = max(len(w.label) for w in rep.windows)
+    reset_w = 16                                        # "resets Thu 10 AM"
+    bar_w = max(8, width - label_w - 1 - 1 - 4 - 2 - reset_w)
+    local_now = datetime.now().astimezone()
+    for w in rep.windows:
+        t.append(f"{w.label:<{label_w}} ", style="dim")
+        t.append_text(_limit_bar(w.used_pct, bar_w))
+        t.append(f" {int(w.used_pct):>3}%", style="bold" if w.used_pct >= 75 else "")
+        r = fmt_reset(w.resets_at, local_now)
+        if r:
+            t.append(f"  {r}", style="dim")
+        t.append("\n")
+    return t
+
+
+def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
+               limits: LimitsReport | None = None, limits_on: bool = False, polling: bool = True) -> Text:
     key, label, col = USAGE_METRICS[metric_idx % len(USAGE_METRICS)]
     t = Text()
     t.append(f"Usage · last {USAGE_DAYS} days · {label}\n", style="bold")
@@ -492,6 +560,8 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int) -> Text:
     t.append(f"out {fmt_count(today.out_tokens)} · in {fmt_count(today.in_tokens)}\n")
     t.append("        ", style="dim")
     t.append(f"{today.messages} msgs · {today.session_count} sessions\n\n")
+    t.append_text(limits_text(limits, limits_on, width, polling=polling))
+    t.append("\n")
 
     vals = [getattr(d, key) for d in days]
     mx = max(vals) or 1
@@ -576,6 +646,10 @@ class SettingsScreen(Screen):
             with Horizontal(classes="row"):
                 yield Label(f"Align activity text  (pad names to a {self.settings.name_column_width}-column field)")
                 yield Switch(value=self.settings.align_columns, id="align_columns")
+            with Horizontal(classes="row"):
+                yield Label("Plan limits in the usage panel  (what /usage shows; reads the Claude Code sign-in "
+                            "from your Keychain, so macOS may ask you to allow it)")
+                yield Switch(value=self.settings.show_limits, id="show_limits")
             yield Static("Ordering  (applies now and at launch)", classes="section")
             with RadioSet(id="ordering"):
                 for o in ORDERINGS:
@@ -591,6 +665,8 @@ class SettingsScreen(Screen):
             self.settings.show_usage = event.value
         elif event.switch.id == "align_columns":
             self.settings.align_columns = event.value
+        elif event.switch.id == "show_limits":
+            self.settings.show_limits = event.value
         self._changed()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -644,6 +720,7 @@ class AgentFarm(App):
             show_usage = self.settings.show_usage
         self.collector = Collector()
         self.usage = UsageScanner()
+        self.limits = PlanLimits()
         self.usage_metric = 0
         # The usage panel shows when the setting or --usage says so, and `u` toggles it.
         self.usage_forced: bool = bool(show_usage)
@@ -697,6 +774,8 @@ class AgentFarm(App):
         self.scan_usage()
         self.set_interval(REFRESH_S, self.collect)
         self.set_interval(USAGE_SCAN_S, self.scan_usage)
+        self._tick_limits(force=True)
+        self.set_interval(LIMITS_POLL_S, self._tick_limits)
 
     def on_resize(self) -> None:
         self._apply_detail_visibility()
@@ -760,6 +839,30 @@ class AgentFarm(App):
         if changed or not self._usage_width:
             self._on_ui(self.render_usage)
 
+    def _limits_polling(self) -> bool:
+        """The periodic poll runs only while a session is busy: the numbers cannot move while
+        everyone is idle or waiting for input."""
+        return any(i.alive and i.status == "busy" for i in self.instances)
+
+    def _tick_limits(self, force: bool = False) -> None:
+        """Fetch plan limits only when someone can see them (panel open, setting on). The
+        timer fetches only while a session is busy; opening the panel or turning the setting
+        on fetches once regardless (force), so the block never starts empty."""
+        if not (self.settings.show_limits and self.usage_forced):
+            return
+        if force or self._limits_polling():
+            self.fetch_limits()
+
+    @work(thread=True, exclusive=True, group="limits")
+    def fetch_limits(self) -> None:
+        try:
+            changed = self.limits.refresh()
+        except Exception:
+            log.exception("plan limits fetch failed")
+            return
+        if changed:
+            self._on_ui(self.render_usage)
+
     def render_usage(self) -> None:
         try:
             usage = self.query_one("#usage", Static)
@@ -767,7 +870,8 @@ class AgentFarm(App):
             return
         width = max(30, (usage.size.width or USAGE_PANEL_WIDTH) - 2)      # minus padding
         self._usage_width = usage.size.width
-        usage.update(usage_text(self.usage, self.usage_metric, width))
+        usage.update(usage_text(self.usage, self.usage_metric, width,
+                                self.limits.report(), self.settings.show_limits, self._limits_polling()))
 
     def action_toggle_usage(self) -> None:
         usage = self.query_one("#usage", Static)
@@ -775,6 +879,7 @@ class AgentFarm(App):
         self._apply_detail_visibility()
         if self.usage_forced:
             self.render_usage()
+            self._tick_limits(force=True)
 
     def action_cycle_metric(self) -> None:
         self.usage_metric = (self.usage_metric + 1) % len(USAGE_METRICS)
@@ -1029,6 +1134,8 @@ class AgentFarm(App):
                 self.ordering = get_ordering(self.settings.ordering)
             except KeyError:
                 pass
+        self.render_usage()                    # the plan-limits block follows its setting at once
+        self._tick_limits(force=True)
         # Labels are rebuilt from the current instances on the main screen's next apply.
         self.call_later(lambda: self.apply_snapshot(list(self.instances)) if self.instances else None)
 
