@@ -200,3 +200,7 @@ result. The app is a Python program (Textual) running inside a native window; se
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The app icon's rooster is from [Noto Emoji](https://github.com/googlefonts/noto-emoji),
+copyright Google LLC, used under its open license; see
+[NOTICE-noto-emoji.txt](macos/Resources/NOTICE-noto-emoji.txt).
