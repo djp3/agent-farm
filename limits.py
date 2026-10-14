@@ -37,6 +37,7 @@ MIN_INTERVAL_S = 15             # a refresh sooner than this after a good one is
 
 # Reply keys in display order with their panel labels. Per-model weeks are present only on
 # plans that have them; "extra" is pay-as-you-go spend when the account has it enabled.
+# Model-scoped weeks such as Fable come from the reply's "limits" list (see _scoped_windows).
 WINDOWS = (("five_hour", "session"), ("seven_day", "week"),
            ("seven_day_opus", "week · opus"), ("seven_day_sonnet", "week · sonnet"))
 EXTRA_KEY, EXTRA_LABEL = "extra_usage", "extra"
@@ -152,6 +153,39 @@ def _parse_ts(value) -> datetime | None:
         return None
 
 
+def _scope_name(scope) -> str:
+    """The display name of a scoped limit: its model ("Fable"), else its surface."""
+    if not isinstance(scope, dict):
+        return ""
+    for part in ("model", "surface"):
+        v = scope.get(part)
+        if isinstance(v, dict) and isinstance(v.get("display_name"), str) and v["display_name"]:
+            return v["display_name"]
+    return ""
+
+
+def _scoped_windows(rows, taken: set[str]) -> list[Window]:
+    """Weekly limits scoped to one model or surface, from the reply's newer "limits" list
+    (where the Fable week lives). A scope already shown from a seven_day_* key is skipped."""
+    out: list[Window] = []
+    if not isinstance(rows, list):
+        return out
+    for r in rows:
+        if not isinstance(r, dict) or r.get("kind") != "weekly_scoped":
+            continue
+        name = _scope_name(r.get("scope"))
+        pct = r.get("percent")
+        if not name or not isinstance(pct, (int, float)):
+            continue
+        label = f"week · {name.lower()}"
+        if label in taken:
+            continue
+        taken.add(label)
+        out.append(Window(f"scoped:{name}", label, max(0.0, min(100.0, float(pct))),
+                          _parse_ts(r.get("resets_at"))))
+    return out
+
+
 def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
     wins: list[Window] = []
     for key, label in WINDOWS:
@@ -160,6 +194,7 @@ def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
             continue
         pct = max(0.0, min(100.0, float(w["utilization"])))
         wins.append(Window(key, label, pct, _parse_ts(w.get("resets_at"))))
+    wins.extend(_scoped_windows(data.get("limits"), {w.label for w in wins}))
     extra = data.get(EXTRA_KEY)
     if isinstance(extra, dict) and extra.get("is_enabled") and isinstance(extra.get("utilization"), (int, float)):
         wins.append(Window(EXTRA_KEY, EXTRA_LABEL, max(0.0, min(100.0, float(extra["utilization"]))), None))
