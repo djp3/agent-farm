@@ -40,7 +40,11 @@ SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "
 [ -d "$SPARKLE_FW" ] || { echo "Sparkle.framework not found under macos/.build/artifacts" >&2; exit 1; }
 
 step "icon"
-[ -f macos/Resources/AppIcon.icns ] || swift scripts/make_icon.swift macos/Resources/AppIcon.icns
+# Redrawn when missing or older than its script or artwork, so an icon change reaches the next build.
+ICNS=macos/Resources/AppIcon.icns
+if [ ! -f "$ICNS" ] || [ scripts/make_icon.swift -nt "$ICNS" ] || [ macos/Resources/rooster.png -nt "$ICNS" ]; then
+    swift scripts/make_icon.swift macos/Resources/rooster.png "$ICNS"
+fi
 
 step "assemble $APP ($VERSION)"
 rm -rf "$APP"
@@ -55,6 +59,7 @@ cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 cp -R dist/python/agent-farm-core "$APP/Contents/Resources/agent-farm-core"
 cp macos/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
+cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-emoji.txt"
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 

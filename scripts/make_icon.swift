@@ -1,6 +1,9 @@
-// Draws the agent-farm app icon with the TUI's own glyph language (a filled "has
-// children" triangle followed by three agent circles in the busy / idle / waiting
-// colors) and writes an .icns.   usage: swift scripts/make_icon.swift <out.icns>
+// Draws the agent-farm app icon, the rooster emoji on the app's dark rounded square, and
+// writes an .icns.   usage: swift scripts/make_icon.swift <rooster image> <out.icns>
+// The rooster is Noto Emoji's 3D U+1F413 (3D/png/512/emoji_u1f413.png, Google LLC); see
+// macos/Resources/NOTICE-noto-emoji.txt. Apple's own emoji artwork is not licensed for
+// redistribution, so it must not be used here. The art is 512 px, so the 1024 px slot is
+// upscaled with high-quality interpolation. Any image NSImage reads works, SVG included.
 import AppKit
 import Foundation
 
@@ -12,12 +15,14 @@ func color(_ hex: String) -> NSColor {
                    blue: CGFloat(v & 0xff) / 255, alpha: 1)
 }
 
-func render(pixels: Int) -> Data {
+func render(_ art: NSImage, pixels: Int) -> Data {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8,
                                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    let ctx = NSGraphicsContext(bitmapImageRep: rep)!
+    ctx.imageInterpolation = .high
+    NSGraphicsContext.current = ctx
     let s = CGFloat(pixels)
     let inset = s * 0.09                            // Apple's icon grid leaves a margin
     let r = NSRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
@@ -25,33 +30,24 @@ func render(pixels: Int) -> Data {
     color("#15171c").setFill()
     NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius).fill()
 
-    let cy = r.midY
-    let h = r.height * 0.40                         // triangle height
-    let tri = NSBezierPath()
-    let tx = r.minX + r.width * 0.16
-    tri.move(to: NSPoint(x: tx, y: cy + h / 2))
-    tri.line(to: NSPoint(x: tx, y: cy - h / 2))
-    tri.line(to: NSPoint(x: tx + h * 0.95, y: cy))
-    tri.close()
-    color("#00d75f").setFill()
-    tri.fill()
-
-    let rad = r.width * 0.062
-    for (i, c) in ["#00d75f", "#5f87ff", "#ff9500"].enumerated() {
-        let x = r.minX + r.width * (0.62 + 0.135 * CGFloat(i))
-        color(c).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x - rad, y: cy - rad, width: 2 * rad, height: 2 * rad)).fill()
-    }
+    let side = r.width * 0.80                       // the rooster's square, centered in the tile
+    art.draw(in: NSRect(x: r.midX - side / 2, y: r.midY - side / 2, width: side, height: side),
+             from: .zero, operation: .sourceOver, fraction: 1)
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
 
-let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "AppIcon.icns"
+let args = CommandLine.arguments
+guard args.count == 3, let art = NSImage(contentsOf: URL(fileURLWithPath: args[1])) else {
+    FileHandle.standardError.write("usage: swift scripts/make_icon.swift <rooster image> <out.icns>\n".data(using: .utf8)!)
+    exit(2)
+}
+let out = args[2]
 let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("agent-farm-\(getpid()).iconset")
 try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
 for base in [16, 32, 128, 256, 512] {
-    try render(pixels: base).write(to: tmp.appendingPathComponent("icon_\(base)x\(base).png"))
-    try render(pixels: base * 2).write(to: tmp.appendingPathComponent("icon_\(base)x\(base)@2x.png"))
+    try render(art, pixels: base).write(to: tmp.appendingPathComponent("icon_\(base)x\(base).png"))
+    try render(art, pixels: base * 2).write(to: tmp.appendingPathComponent("icon_\(base)x\(base)@2x.png"))
 }
 let p = Process()
 p.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")

@@ -67,8 +67,10 @@ Steps, all in that script:
 2. **`swift build -c release`** in `macos/`. SwiftTerm is linked statically; Sparkle comes
    as a binary framework that SwiftPM downloads into `macos/.build/artifacts`.
 3. **Assemble** `dist/agent-farm.app`: the Swift binary, `Sparkle.framework`, the Python
-   tree under `Contents/Resources/agent-farm-core`, the icon (drawn by
-   `scripts/make_icon.swift` on first build), and `Info.plist` with `VERSION` filled in for
+   tree under `Contents/Resources/agent-farm-core`, the icon (Noto Emoji's 3D rooster from
+   `macos/Resources/rooster.png`, drawn by `scripts/make_icon.swift` whenever the script or
+   the image is newer than the cached `AppIcon.icns`; never Apple's emoji artwork, which is
+   not licensed for redistribution), its license notice, and `Info.plist` with `VERSION` filled in for
    both `CFBundleShortVersionString` and `CFBundleVersion`.
 4. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
    nested `Python.framework`, the entry executable with `packaging/python.entitlements`,
