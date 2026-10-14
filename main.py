@@ -34,12 +34,14 @@ from textual.widgets.tree import TreeNode
 
 from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
                        setup_logging)
+from apppaths import app_version
 from limits import LimitsReport, PlanLimits
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
 from usage import WINDOW_DAYS, UsageScanner, fmt_count
 
 log = logging.getLogger("agent_farm.app")
+VERSION = app_version()       # from the Mac app's environment, or the VERSION file in a checkout
 errors = ErrorCounter()
 
 REFRESH_S = 1.0
@@ -684,6 +686,7 @@ class SettingsScreen(Screen):
 
 class AgentFarm(App):
     TITLE = "agent-farm"
+    SUB_TITLE = f"v{VERSION}" if VERSION else ""       # the header reads "agent-farm — v0.2.4"
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }

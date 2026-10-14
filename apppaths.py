@@ -8,6 +8,7 @@ the code: logs/ and settings.json. Run as the bundled Mac app
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,3 +27,15 @@ def data_dir() -> Path:
     if FROZEN:
         return Path.home() / "Library" / "Application Support" / APP_NAME
     return CODE_DIR
+
+
+def app_version() -> str:
+    """The release number without a leading v, or "" if unknown. The Mac app passes its
+    bundle version in AGENT_FARM_VERSION; a run from a checkout reads the VERSION file."""
+    v = os.environ.get("AGENT_FARM_VERSION", "").strip()
+    if not v:
+        try:
+            v = (CODE_DIR / "VERSION").read_text().strip()
+        except OSError:
+            v = ""
+    return v.removeprefix("v")
