@@ -6,7 +6,9 @@ teammates working under it. Sessions in iTerm2 and in the Claude desktop app bot
 
 It is strictly read-only. Nothing is installed into Claude Code and no hooks are added;
 agent-farm only reads the files Claude Code already writes under `~/.claude` and asks
-iTerm2 which tab owns which session.
+iTerm2 which tab owns which session. The one optional exception is the plan-limits block
+of the usage panel, off by default, which asks Anthropic for the same numbers `/usage`
+shows (see [The usage panel](#the-usage-panel)).
 
 ## Install
 
@@ -126,6 +128,8 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
   readers who cannot rely on the glyph color.
 - **Usage panel open at launch** (off).
 - **Align activity text** (on): pad names to a fixed column so the activity text lines up.
+- **Plan limits in the usage panel** (off): the `/usage` windows, fetched with your Claude
+  Code sign-in. See the usage panel section for what that involves.
 - **Ordering**: attention, activity, started or name.
 
 **Monitor ▸ Reveal Settings File** shows the JSON file behind the panel; the name column
@@ -139,9 +143,20 @@ title and over the value column; `m` cycles it. Today's bar is drawn at full gre
 rest dimmed. Beneath the days a stacked bar splits output tokens by model, with a legend;
 each model keeps its color and texture for the life of the app, so the stack reads without
 color. The "logged cost" line sums the cost checkpoints Claude Code writes at the end of
-each session, so today's sessions are not in it yet. Plan rate limits (the `/usage`
-command) are fetched live by Claude Code and are not available on disk, so they are not
-shown.
+each session, so today's sessions are not in it yet.
+
+**Plan limits.** With the setting on, a block above the days shows what `/usage` shows in
+Claude Code: one bar per rate-limit window (the current 5-hour session, the current week,
+and per-model weeks on plans that have them) with the percent used and when it resets.
+Green turns orange at 75% and red at 90%. Those numbers exist nowhere on disk, so
+agent-farm fetches them the way Claude Code does: it reads the Claude Code sign-in from
+your Keychain (the item named `Claude Code-credentials`) and asks Anthropic's usage
+endpoint when you open the panel, then every five minutes while the panel is open and at
+least one session is busy; while everyone is idle or waiting the poll pauses and the
+header says so, since the numbers cannot move. macOS may ask you to allow the Keychain
+read. The sign-in is used as is, never renewed, never written anywhere and never logged;
+when it has expired, the block says so until Claude Code renews it. The block is off by
+default and the app makes no network request of its own while it is off.
 
 ## What the states mean
 
