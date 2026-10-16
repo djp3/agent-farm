@@ -137,32 +137,135 @@ def test_panel_block_states():
     assert paused.endswith("ago · paused") and len(paused) <= 48
 
 
-def busy_farm(*statuses):
-    from collector import Instance
-    return [Instance(pid=i, session_id=f"s{i}", name=f"n{i}", alive=True, status=st)
-            for i, st in enumerate(statuses, 1)]
+def farm(*statuses, agent=None):
+    """Live sessions with the given statuses; agent=(index, status) adds a subagent to one."""
+    from collector import Agent, Instance
+    out = [Instance(pid=i, session_id=f"s{i}", name=f"n{i}", alive=True, status=st)
+           for i, st in enumerate(statuses, 1)]
+    if agent:
+        idx, st = agent
+        out[idx].agents = [Agent(agent_id="a1", name="helper", status=st)]
+    return out
 
 
-def test_timer_polls_only_while_a_session_is_busy(monkeypatch):
-    app = main.AgentFarm()                               # never run; the gate is plain logic
+def test_working_means_busy_sessions_or_running_subagents():
+    assert not main.fleet_working(farm("idle", "waiting"))
+    assert main.fleet_working(farm("idle", "busy"))
+    assert main.fleet_working(farm("idle", agent=(0, "running")))      # lead idle, subagent working
+    assert main.fleet_working(farm("waiting", agent=(0, "starting")))
+    assert not main.fleet_working(farm("idle", agent=(0, "dormant")))
+    dead = farm("busy")
+    dead[0].alive = False
+    assert not main.fleet_working(dead)
+
+
+class Clock:
+    def __init__(self):
+        self.t = 10_000.0
+
+    def __call__(self):
+        return self.t
+
+
+def gated_app(monkeypatch):
+    app = main.AgentFarm()                                # never run; the gate is plain logic
     calls = []
-    monkeypatch.setattr(app, "fetch_limits", lambda: calls.append(1))
+    monkeypatch.setattr(app, "fetch_limits", lambda: calls.append(clock.t))
+    clock = Clock()
+    monkeypatch.setattr(main, "_monotonic", clock)
     app.settings.show_limits, app.usage_forced = True, True
-    app.instances = busy_farm("idle", "waiting")
-    app._tick_limits()
-    assert calls == []                                   # everyone idle or waiting: no poll
-    app._tick_limits(force=True)
-    assert calls == [1]                                  # opening the panel still fetches once
-    app.instances = busy_farm("idle", "busy")
-    app._tick_limits()
-    assert calls == [1, 1]
+    return app, calls, clock
+
+
+def test_no_fetch_while_everyone_is_idle_or_waiting(monkeypatch):
+    app, calls, clock = gated_app(monkeypatch)
+    for _ in range(20):
+        app._limits_on_snapshot(farm("idle", "waiting"))
+        clock.t += 60
+    assert calls == []
+    assert not app._limits_polling()                      # the header says "paused"
+
+
+def test_first_fetch_comes_as_soon_as_work_resumes(monkeypatch):
+    app, calls, clock = gated_app(monkeypatch)
+    app._tick_limits(force=True)                          # the panel opened: one fetch
+    clock.t += 3000                                       # a long idle stretch
+    app._limits_on_snapshot(farm("idle"))
+    assert len(calls) == 1
+    app._limits_on_snapshot(farm("busy"))                 # work resumes: fetch now, not at a tick
+    assert calls == [calls[0], clock.t]
+
+
+def test_at_most_one_fetch_per_interval_while_working(monkeypatch):
+    app, calls, clock = gated_app(monkeypatch)
+    for _ in range(600):                                  # ten minutes of one-second snapshots
+        app._limits_on_snapshot(farm("busy"))
+        clock.t += 1
+    assert len(calls) == 2
+    assert calls[1] - calls[0] == main.LIMITS_POLL_S
+
+
+def test_a_short_burst_between_checks_still_counts(monkeypatch):
+    app, calls, clock = gated_app(monkeypatch)
+    app._limits_on_snapshot(farm("busy"))                 # fetch 1
+    clock.t += 30
+    app._limits_on_snapshot(farm("busy"))                 # work after the fetch, too soon to fetch again
+    clock.t += 30
+    for _ in range(10):                                   # idle from here on
+        app._limits_on_snapshot(farm("idle"))
+        clock.t += 30
+    assert len(calls) == 2                                # the burst was remembered and fetched once
+    assert calls[1] - calls[0] >= main.LIMITS_POLL_S
+    clock.t += 3600
+    app._limits_on_snapshot(farm("idle"))
+    assert len(calls) == 2                                # nothing new happened: no more fetches
+
+
+def test_paused_marker_and_age_redraw_without_other_activity(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(main, "_monotonic", clock)
+    monkeypatch.setattr(main.AgentFarm, "fetch_limits", lambda self: None)
+    draws = []
+
+    async def go():
+        app = main.AgentFarm()
+        app.collector.snapshot = lambda: []
+        app.settings.show_limits = True
+        async with app.run_test(size=(140, 44)) as pilot:
+            await pilot.pause(0.2)
+            app.usage_forced = True
+            real = app.render_usage
+            monkeypatch.setattr(app, "render_usage", lambda: (draws.append(clock.t), real()))
+            app._limits_on_snapshot(farm("busy"))          # first look: draws
+            n = len(draws)
+            app._limits_on_snapshot(farm("busy"))          # nothing changed: no draw
+            assert len(draws) == n
+            clock.t += 1
+            app._limits_on_snapshot(farm("idle"))          # work since the fetch: still not paused
+            assert len(draws) == n
+            app._tick_limits(force=True)                   # a fetch clears the latch...
+            app._limits_on_snapshot(farm("idle"))          # ...so "paused" appears at once
+            assert len(draws) == n + 1
+            clock.t += main.LIMITS_REDRAW_S
+            app._limits_on_snapshot(farm("idle"))          # the age is redrawn once a minute
+            assert len(draws) == n + 2
+            await pilot.press("q")
+
+    import asyncio
+    asyncio.run(go())
+
+
+def test_hidden_panel_or_setting_off_never_fetches(monkeypatch):
+    app, calls, clock = gated_app(monkeypatch)
     app.usage_forced = False
+    app._limits_on_snapshot(farm("busy"))
     app._tick_limits(force=True)
-    assert calls == [1, 1]                               # panel closed: nothing, not even forced
     app.usage_forced, app.settings.show_limits = True, False
-    app._tick_limits()
-    assert calls == [1, 1]                               # setting off: nothing
-    assert main.LIMITS_POLL_S == 300.0
+    app._limits_on_snapshot(farm("busy"))
+    assert calls == []
+    app.settings.show_limits = True                       # back on: the remembered work fetches
+    app._limits_on_snapshot(farm("idle"))
+    assert len(calls) == 1
 
 
 def test_reset_wording_today_vs_another_day():
