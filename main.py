@@ -46,7 +46,9 @@ errors = ErrorCounter()
 
 REFRESH_S = 1.0
 USAGE_SCAN_S = 10.0
-LIMITS_POLL_S = 300.0   # plan-limit poll: panel open, setting on, and at least one session busy
+LIMITS_POLL_S = 300.0   # plan limits: at most one fetch per this many seconds, and only after work
+_monotonic = time.monotonic   # the plan-limit gate's clock; tests replace this, not time.monotonic
+LIMITS_REDRAW_S = 60.0  # while idle nothing else redraws the panel; keep its age and "paused" current
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
@@ -468,6 +470,15 @@ def title_sequence(title: str) -> str:
     return f"\x1b]0;{title}\x07"
 
 
+def fleet_working(instances: list[Instance]) -> bool:
+    """Is anything spending tokens: a live session that is busy, or a live subagent or
+    teammate that is running or starting (even while its lead sits idle)? Waiting for input
+    and idle do not count."""
+    return any(i.alive and (i.status == "busy" or
+                            any(not a.archived and a.status in ("running", "starting") for a in i.agents))
+               for i in instances)
+
+
 def window_title(instances: list[Instance]) -> str:
     n = sum(1 for i in instances if i.alive and i.status != "idle")
     return f"{WINDOW_TITLE} {CHICKEN * n}" if n else WINDOW_TITLE
@@ -512,7 +523,8 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
                 polling: bool = True) -> Text:
     """The plan-limit block of the usage panel: what /usage shows in Claude Code, one bar per
     window. Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
-    Not polling (no session busy): the age keeps growing, so the header says it is paused."""
+    Not polling (nothing has worked since the last fetch): the age keeps growing, so the
+    header says it is paused."""
     t = Text()
     if not enabled:
         t.append("plan limits · off  (s: Settings)\n", style="dim")
@@ -732,6 +744,12 @@ class AgentFarm(App):
         self._agent_fp: dict[str, dict[str, tuple]] = {}   # head key -> subagent fingerprint
         self._strip_width = 0                               # agent strip column, recomputed per tick
         self._window_title: str | None = None               # last title sent to the terminal
+        # Plan limits are fetched after work, not on a timer: _limits_worked latches any work seen
+        # since the last fetch, and a fetch waits until LIMITS_POLL_S after the previous one.
+        self._limits_worked = False
+        self._working_now = False
+        self._limits_last_try = float("-inf")              # _monotonic() of the last fetch started
+        self._limits_drawn: tuple[float, bool] = (float("-inf"), False)   # (when, paused shown?) at last draw
         self.nodes: dict[str, TreeNode] = {}        # key -> node
         self.objects: dict[str, object] = {}        # key -> Instance | Agent
         self.detail_forced: bool | None = None      # None = auto by height
@@ -777,8 +795,7 @@ class AgentFarm(App):
         self.scan_usage()
         self.set_interval(REFRESH_S, self.collect)
         self.set_interval(USAGE_SCAN_S, self.scan_usage)
-        self._tick_limits(force=True)
-        self.set_interval(LIMITS_POLL_S, self._tick_limits)
+        self._tick_limits(force=True)          # later fetches follow the work seen in each snapshot
 
     def on_resize(self) -> None:
         self._apply_detail_visibility()
@@ -843,17 +860,35 @@ class AgentFarm(App):
             self._on_ui(self.render_usage)
 
     def _limits_polling(self) -> bool:
-        """The periodic poll runs only while a session is busy: the numbers cannot move while
-        everyone is idle or waiting for input."""
-        return any(i.alive and i.status == "busy" for i in self.instances)
+        """Will a fetch follow? Only once something has worked since the last one: the
+        numbers cannot move while everyone is idle or waiting for input."""
+        return self._limits_worked or self._working_now
+
+    def _limits_on_snapshot(self, instances: list[Instance]) -> None:
+        """Called with every snapshot (about once a second): remember any work, then fetch if
+        it is due. Checking every snapshot instead of on a fixed timer means the first fetch
+        after a pause comes as soon as work resumes, and a short burst between two checks
+        is still counted."""
+        self._working_now = fleet_working(instances)
+        if self._working_now:
+            self._limits_worked = True
+        self._tick_limits()
+        drawn_at, drawn_polling = self._limits_drawn
+        if (self.is_running and self.settings.show_limits and self.usage_forced and
+                (self._limits_polling() != drawn_polling or _monotonic() - drawn_at >= LIMITS_REDRAW_S)):
+            self.render_usage()
 
     def _tick_limits(self, force: bool = False) -> None:
-        """Fetch plan limits only when someone can see them (panel open, setting on). The
-        timer fetches only while a session is busy; opening the panel or turning the setting
-        on fetches once regardless (force), so the block never starts empty."""
+        """Fetch plan limits only when someone can see them (panel open, setting on), and then
+        only when work happened since the last fetch and that fetch is LIMITS_POLL_S old.
+        Opening the panel or turning the setting on fetches at once (force), so the block
+        never starts empty."""
         if not (self.settings.show_limits and self.usage_forced):
             return
-        if force or self._limits_polling():
+        due = self._limits_worked and _monotonic() - self._limits_last_try >= LIMITS_POLL_S
+        if force or due:
+            self._limits_last_try = _monotonic()
+            self._limits_worked = False                     # the next snapshot re-arms it if work goes on
             self.fetch_limits()
 
     @work(thread=True, exclusive=True, group="limits")
@@ -873,6 +908,7 @@ class AgentFarm(App):
             return
         width = max(30, (usage.size.width or USAGE_PANEL_WIDTH) - 2)      # minus padding
         self._usage_width = usage.size.width
+        self._limits_drawn = (_monotonic(), self._limits_polling())
         usage.update(usage_text(self.usage, self.usage_metric, width,
                                 self.limits.report(), self.settings.show_limits, self._limits_polling()))
 
@@ -1105,6 +1141,7 @@ class AgentFarm(App):
                                     recent, self.collector.iterm.available),
                          fleet_tooltip(instances, self.ordering, recent, self.collector.iterm.available))
         self._set_window_title(window_title(instances))
+        self._limits_on_snapshot(instances)
         self._refresh_detail()
 
     # ---- detail pane ------------------------------------------------------

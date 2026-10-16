@@ -151,9 +151,9 @@ and per-model weeks such as Fable on plans that have them) with the percent used
 Green turns orange at 75% and red at 90%. Those numbers exist nowhere on disk, so
 agent-farm fetches them the way Claude Code does: it reads the Claude Code sign-in from
 your Keychain (the item named `Claude Code-credentials`) and asks Anthropic's usage
-endpoint when you open the panel, then every five minutes while the panel is open and at
-least one session is busy; while everyone is idle or waiting the poll pauses and the
-header says so, since the numbers cannot move. macOS may ask you to allow the Keychain
+endpoint when you open the panel, then again as soon as a session or subagent has worked
+since the last fetch, at most once every five minutes. While everyone is idle or waiting
+for you no request goes out and the header says paused, since the numbers cannot move. macOS may ask you to allow the Keychain
 read. The sign-in is used as is, never renewed, never written anywhere and never logged;
 when it has expired, the block says so until Claude Code renews it. The block is off by
 default and the app makes no network request of its own while it is off.
