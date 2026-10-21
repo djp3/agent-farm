@@ -167,8 +167,8 @@ default and the app makes no network request of its own while it is off.
 the last 24 hours, the current hour at the right. A stalk's height is how many agents
 (sessions and subagents together) were running in that hour on average: three agents that
 each ran for half an hour make 1.5. An hour with a little work that rounds to nothing still
-shows a sprout. Beside it: agents running this hour so far, the busiest hour, and the day's
-total in agent-hours. Running time comes from the transcripts: an agent counts as running
+shows a sprout. Beside it: agents running this hour so far, the busiest hour, the average
+across all 24 hours, and the day's total in agent-hours. Running time comes from the transcripts: an agent counts as running
 from each message or tool result until its turn ends or you interrupt it, and a silence
 counts for at most ten minutes, so a permission prompt left open overnight does not read as
 a night of work.

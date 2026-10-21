@@ -600,11 +600,13 @@ def _hour_label(ts: float) -> str:
     return f"{h % 12 or 12}{'a' if h < 12 else 'p'}"
 
 
-def activity_text(bins: list[tuple[float, float]], width: int) -> Text:
+def activity_text(bins: list[tuple[float, float]], width: int, now: float | None = None) -> Text:
     """Agents at work over the last day: a stalk per hour, oldest at the left and the current
     hour at the right, its height the agents running in that hour (sessions and subagents,
     so three agents running half an hour each make 1.5). An hour with some work that rounds
-    to no rows still shows a sprout. The figures to the right say what the stalks show."""
+    to no rows still shows a sprout. The figures to the right say what the stalks show: this
+    hour so far, the busiest hour, the average over the whole chart, and the agent-hours."""
+    now = time.time() if now is None else now
     t = Text()
     t.append(f"agents at work · last {len(bins)} hours\n", style="dim")
     vals = [v for _, v in bins]
@@ -619,9 +621,11 @@ def activity_text(bins: list[tuple[float, float]], width: int) -> Text:
     labels = {r: f"{r * unit:g}" for r in whole[::-1][::step]}
     gut = max((len(x) for x in labels.values()), default=1)
     peak_at = bins[vals.index(peak)][0]
-    hours_total = sum(v * ((bins[k + 1][0] if k + 1 < len(bins) else time.time()) - a) / 3600
+    hours_total = sum(v * ((bins[k + 1][0] if k + 1 < len(bins) else now) - a) / 3600
                       for k, (a, v) in enumerate(bins))
+    span_h = (now - bins[0][0]) / 3600                     # 23 whole hours and this one so far
     side = [("now", f"{vals[-1]:.1f}"), ("peak", f"{peak:.1f} at {_hour_label(peak_at)}"),
+            ("avg", f"{hours_total / span_h:.1f}" if span_h > 0 else "–"),
             ("day", f"{hours_total:.1f} agent-h")]
     side_w = max(len(k) for k, _ in side)
     for r in range(ACTIVITY_ROWS, 0, -1):

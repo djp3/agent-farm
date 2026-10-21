@@ -97,7 +97,8 @@ def bins_of(vals):
 
 def test_the_chart_draws_a_stalk_per_hour():
     vals = [0.0] * 21 + [1.5, 0.1, 3.0]
-    lines = main.activity_text(bins_of(vals), 47).plain.splitlines()
+    now = (TOP + timedelta(hours=23, minutes=30)).timestamp()      # half way through the last hour
+    lines = main.activity_text(bins_of(vals), 47, now=now).plain.splitlines()
     rows = lines[1:1 + main.ACTIVITY_ROWS]                    # top row first
     col = lambda k: [r[2 + k] for r in rows]                  # past "3┤"
     assert col(21) == [" ", " ", " ", main.GRAIN, main.STALK, main.STALK]   # 1.5 = three rows of 0.5
@@ -105,7 +106,15 @@ def test_the_chart_draws_a_stalk_per_hour():
     assert col(23) == [main.GRAIN] + [main.STALK] * 5          # 3.0 reaches the top
     assert [r[:2] for r in rows] == ["3┤", " │", "2┤", " │", "1┤", " │"]
     assert "now  3.0" in rows[0] and "peak 3.0" in rows[1]
+    assert "avg  0.1" in rows[2]                              # 3.1 agent-hours over 23.5 hours
+    assert "day  3.1 agent-h" in rows[3]
     assert all(len(x) <= 47 for x in lines)
+
+
+def test_the_average_is_over_the_whole_chart():
+    now = (TOP + timedelta(hours=23, minutes=15)).timestamp()
+    rows = main.activity_text(bins_of([2.0] * 24), 47, now=now).plain.splitlines()
+    assert "avg  2.0" in rows[3] and "day  46.5 agent-h" in rows[4]
 
 
 def test_the_chart_scale_and_an_empty_day():
