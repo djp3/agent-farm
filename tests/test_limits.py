@@ -125,11 +125,13 @@ def test_panel_block_states():
     off = main.limits_text(None, False, 48).plain
     assert "off" in off and "Settings" in off
     assert "fetching" in main.limits_text(LimitsReport(), True, 48).plain
-    rep = parse_report(REPLY, "max", now=time.time())
-    lines = main.limits_text(rep, True, 48).plain.splitlines()
+    now = datetime(2026, 10, 13, 19, 0, tzinfo=timezone.utc).timestamp()   # 3 h before the session resets
+    rep = parse_report(REPLY, "max", now=now)
+    lines = main.limits_text(rep, True, 48, now=now).plain.splitlines()
     assert lines[0].startswith("plan limits · max")
-    assert "session" in lines[1] and " 42%" in lines[1] and "resets" in lines[1]
-    assert "week" in lines[2] and " 15%" in lines[2]
+    assert "session" in lines[1] and " 42%" in lines[1] and lines[1].endswith(" 3h00m")
+    assert "week" in lines[2] and " 15%" in lines[2] and lines[2].endswith(" 2d22h")
+    assert all(main.PACE_TICK in line for line in lines[1:])
     assert all(len(line) <= 48 for line in lines)
     failed = main.limits_text(LimitsReport(rep.windows, "max", rep.fetched_at, "network error"), True, 48).plain
     assert "unavailable: network error" in failed and "session" in failed
@@ -268,11 +270,47 @@ def test_hidden_panel_or_setting_off_never_fetches(monkeypatch):
     assert len(calls) == 1
 
 
-def test_reset_wording_today_vs_another_day():
-    now = datetime(2026, 10, 13, 9, 0).astimezone()                  # naive = local time
-    assert main.fmt_reset(datetime(2026, 10, 13, 15, 12).astimezone(), now) == "resets 3:12 PM"
-    assert main.fmt_reset(datetime(2026, 10, 16, 10, 0).astimezone(), now) == "resets Fri 10 AM"
-    assert main.fmt_reset(None, now) == ""
+def test_countdown_to_the_reset():
+    at = datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc)
+    left = lambda s: main.fmt_countdown(at, at.timestamp() - s)
+    assert left(4 * 86400 + 5 * 3600 + 59) == "4d 5h"
+    assert left(2 * 86400 + 19 * 3600) == "2d19h"
+    assert left(13 * 3600 + 5 * 60) == "13h05m"
+    assert left(2 * 3600 + 54 * 60 + 30) == "2h54m"
+    assert left(38 * 60) == "38m"
+    assert left(30) == "<1m"
+    assert left(0) == left(-600) == "reset"          # the reading predates the reset
+    assert main.fmt_countdown(None, 0) == ""
+
+
+def test_elapsed_share_of_each_window():
+    rep = parse_report(REPLY, "", now=1.0)
+    session, week = rep.windows
+    reset = session.resets_at.timestamp()
+    assert session.elapsed(reset - 3 * 3600) == 0.4                   # 2 h into a 5-hour session
+    assert week.elapsed(week.resets_at.timestamp() - 7 * 86400 / 4) == 0.75
+    assert session.elapsed(reset - 9 * 3600) == 0.0                   # clock skew: clamp, no crash
+    assert session.elapsed(reset) is None and session.elapsed(reset + 60) is None   # has reset since
+    extra = parse_report(dict(REPLY, extra_usage={"is_enabled": True, "utilization": 7}), "", 1.0)
+    assert extra.windows[-1].elapsed(reset - 60) is None             # extra spend has no clock
+    scoped = {"kind": "weekly_scoped", "percent": 5, "resets_at": "2026-10-17T07:00:00Z",
+              "scope": {"model": {"display_name": "Fable"}}}
+    fable = parse_report(dict(REPLY, limits=[scoped]), "", 1.0).windows[-1]
+    assert fable.span_s == limits.WEEK_S
+
+
+def test_pace_tick_sits_where_an_even_pace_would_be():
+    def cells(bar):
+        return [(bar.plain[i], [sp.style for sp in bar.spans if sp.start <= i < sp.end]) for i in range(len(bar))]
+    under = main._limit_bar(30, 20, elapsed=0.6)                       # behind the clock
+    assert under.plain.index(main.PACE_TICK) == 12 and len(under) == 20
+    assert cells(under)[12][1] == [main.PACE_TICK_ON_TRACK]           # bright, on the dotted track
+    ahead = main._limit_bar(80, 20, elapsed=0.25)                      # ahead of the clock
+    assert ahead.plain.index(main.PACE_TICK) == 5
+    notch = cells(ahead)[5][1][0]
+    assert notch.bgcolor.name == "#ff9500" and notch.color.name == main.PACE_TICK_NOTCH   # cut into the fill
+    assert main._limit_bar(10, 20, elapsed=1.0).plain[-1] == main.PACE_TICK   # last moment stays in the bar
+    assert main.PACE_TICK not in main._limit_bar(10, 20).plain
 
 
 def test_bar_hue_follows_the_thresholds():
