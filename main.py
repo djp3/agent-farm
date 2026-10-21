@@ -315,10 +315,23 @@ def instance_label(i: Instance, now: float, show_status: bool = False, name_widt
     return t
 
 
+# Claude Code's own colors for named agents (its default theme), so a teammate's name reads
+# the same here as in its session. The meta file holds only the name. Passed on as is, pink
+# and orange would not parse, and the rest are basic ANSI colors that Textual's dark theme
+# repaints: its blue is a violet, its yellow an orange.
+AGENT_COLORS = {"red": "#dc2626", "blue": "#6a9bcc", "green": "#16a34a", "yellow": "#ca8a04",
+                "purple": "#827dbd", "orange": "#d97757", "pink": "#c46686", "cyan": "#0891b2"}
+
+
+def agent_name_style(a: Agent, base: str = "bold") -> str:
+    hue = AGENT_COLORS.get(a.color, "")
+    return f"{base} {hue}" if hue else base
+
+
 def agent_label(a: Agent, now: float, show_status: bool = False, name_width: int = 0) -> Text:
     t = Text()
     name = a.name + (f" ({a.agent_type})" if a.agent_type and a.agent_type != a.name else "")
-    t.append(_fit_name(name, name_width), style=f"bold {a.color}" if a.color else "bold")
+    t.append(_fit_name(name, name_width), style=agent_name_style(a))
     if show_status:
         t.append_text(_status_words(a.status, a.last_ts, now))
     act = a.activity
@@ -440,7 +453,7 @@ def detail_text(obj, now: float) -> Text:
                    "remain. Expand the row to browse them.\n", style="dim")
     elif isinstance(obj, Agent):
         a = obj
-        out.append(a.name, style=f"bold underline {a.color}" if a.color else "bold underline")
+        out.append(a.name, style=agent_name_style(a, "bold underline"))
         out.append("\n")
         kv("status", f"{a.status} for {fmt_age(a.last_ts, now)}"
            + ("  (log only, from an earlier run)" if a.archived else ""),
