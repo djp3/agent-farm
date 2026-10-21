@@ -205,8 +205,8 @@ still going counts up to now while its shell is running.
 - Subagents are **running** while their transcript changed in the last 90 s, or ends mid
   tool-call and is under 15 min old; **dormant** once the head agent received their final
   message (they stay resident and can be messaged again); **stale** when they end mid
-  tool-call and have been silent over 15 min; **archived** when their last activity
-  predates the current head process.
+  tool-call and have been silent over 15 min, and **archived** once that silence passes a
+  day; **archived** too when their last activity predates the current head process.
 - A head session's row unfolds on its own when a subagent has a material update: a new
   agent, a state change, or a new message. Plain tool calls do not count, so a row you
   folded stays folded until something worth seeing happens.

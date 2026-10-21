@@ -545,15 +545,22 @@ def detail_text(obj, now: float) -> Text:
             kv("active", f"{time.strftime('%b %d %H:%M', time.localtime(min(times)))} → "
                          f"{time.strftime('%b %d %H:%M', time.localtime(max(times)))}")
         kv("this run", "started " + fmt_age(g.inst.started_at, now) + " ago")
-        out.append("\nThese ran in an earlier process of this session. Teammates live inside the\n"
-                   "head process, so they were not restarted on resume; only their transcripts\n"
-                   "remain. Expand the row to browse them.\n", style="dim")
+        stopped = sum(1 for a in g.agents if a.stopped)
+        if stopped < len(g.agents):
+            out.append("\nThese ran in an earlier process of this session. Teammates live inside the\n"
+                       "head process, so they were not restarted on resume; only their transcripts\n"
+                       "remain.", style="dim")
+        if stopped:
+            out.append(f"\n{stopped} stopped mid-task in this run and have been silent over a day,\n"
+                       "so they are not coming back.", style="dim")
+        out.append(" Expand the row to browse them.\n", style="dim")
     elif isinstance(obj, Agent):
         a = obj
         out.append(a.name, style="bold underline")
         out.append("\n")
         kv("status", f"{a.status} for {fmt_age(a.last_ts, now)}"
-           + ("  (log only, from an earlier run)" if a.archived else "")
+           + ("  (stopped mid-task over a day ago; log only)" if a.stopped
+              else "  (log only, from an earlier run)" if a.archived else "")
            + ("  (waiting on a command it started)" if a.status == "shell" else ""),
            look_of(a).icon)
         kv("type", a.agent_type)
@@ -1262,7 +1269,7 @@ class AgentFarm(App):
             self.objects[akey] = a
             alabel = agent_label(a, now, self.settings.show_status_text, self._name_width(depth, tree))
             alabel.truncate(width - 2 * tree.guide_depth, overflow="ellipsis")
-            rows = [] if a.archived else shell_rows(a.shells, now)
+            rows = shell_rows(a.shells, now)            # none for an earlier run's agents
             anode = place(parent, self.nodes.get(akey))     # None too when it moved to the archive
             if anode is None:
                 anode = parent.add(alabel, data=akey, before=before, expand=expanded.get(akey, True),
@@ -1289,7 +1296,10 @@ class AgentFarm(App):
             dark = AGENT_LOOK["archived"]
             glabel.append(f"archived ({len(archived)})", style=_styled("bold", dark.name))
             glabel.append("  ")
-            glabel.append("earlier runs of this session · logs only", style=_styled("italic", dark.summary))
+            stopped = sum(1 for a in archived if a.stopped)
+            why = ("earlier runs of this session" if not stopped else "stopped over a day ago"
+                   if stopped == len(archived) else "earlier runs, or stopped over a day ago")
+            glabel.append(f"{why} · logs only", style=_styled("italic", dark.summary))
             glabel.truncate(width - tree.guide_depth, overflow="ellipsis")
             if group is None:
                 group = node.add(glabel, data=gkey, expand=expanded.get(gkey, False))
