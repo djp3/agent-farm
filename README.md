@@ -33,13 +33,12 @@ tab-focus key.
 
 From top to bottom:
 
-- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy, waiting or running
-  a shell, so the Dock, Mission Control and the window switcher show whether the farm is
-  at work or needs you.
+- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
+  Dock, Mission Control and the window switcher show whether the farm needs you.
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
 - **The tree**: one row per head session, ordered so that what needs you is at the top,
-  with subagents nested beneath their lead.
+  with subagents nested beneath their lead and the shells each agent is running beneath it.
 - **The detail pane**: everything known about the selected row.
 - **The usage panel** (hidden until you press `u`): your token usage per day and per model,
   and how many agents were at work in each of the last 24 hours.
@@ -49,7 +48,7 @@ From top to bottom:
 | key | action |
 |-----|--------|
 | ↑ ↓ | move |
-| enter / space | fold or unfold a head session's team |
+| enter / space | fold or unfold the row's subagents and shells |
 | f | bring that session forward: its iTerm2 tab, or the Claude desktop app |
 | d | show / hide the detail pane (it hides itself when the window is short) |
 | u | show / hide the usage panel |
@@ -64,46 +63,52 @@ place. On a non-Retina display a larger size or a font such as Menlo reads stead
 
 ### Reading a row
 
-Every row starts with exactly one glyph, so names line up:
+Every row starts with exactly one icon, so names line up. Agents (sessions and subagents)
+get triangles, shells a circle:
 
-| glyph | meaning |
-|-------|---------|
-| ▶ / ▼ | the row has children to fold or unfold (collapsed / expanded) |
-| ▷ | nothing beneath this row |
+| icon | meaning |
+|------|---------|
+| ▶ / ▼ | an agent with rows beneath it: subagents, shells or an archive (folded / unfolded) |
+| ▷ | an agent with nothing beneath it |
+| ◐ | a shell: a command an agent started, still running |
 
-The glyph's color is the row's state. The four head-session colors are the ones iTerm2
-paints on its own Claude status dot, so the tab bar and agent-farm agree:
+The colors follow one rule. The icon says what the row is doing. The name is **white for
+a session you can talk to**, waiting for your input or idle, and otherwise takes the
+state's color. The summary after it is colored only when it needs you or is over:
 
-| color | head session | subagent |
-|-------|--------------|----------|
-| orange | **waiting** for you (permission prompt, question, plan approval) | |
-| green | **busy** on your input | **running**; dimmed while **starting** |
-| teal | **shell**: otherwise idle while a command it started still runs | **shell**: finished or silent while a command it started still runs |
-| blue | **idle**, ready for your next instruction | dimmed: **dormant**, finished but resident |
-| grey | **inactive**: a stale registry entry or an unregistered process | dimmed: **archived**, log only |
-| magenta | | **stale**: silent too long mid tool-call, likely killed |
-| red | agent-farm could not read this session (see the log) | |
+| state | icon | name | summary |
+|-------|------|------|---------|
+| session **waiting** for your input (permission prompt, question, plan approval) | yellow | white | yellow |
+| session **busy**; subagent **running** or **starting**; shell **running** | green | green | default |
+| session **idle**, or idle while a command it started runs | blue | white | default |
+| subagent **dormant** (finished, can be messaged again), or waiting on its own command | blue | blue | default |
+| subagent **stale** (stopped mid-task); a shell whose agent is stale | gray | gray | gray |
+| session **inactive**: a registry entry left behind, or an unregistered process | gray | gray | gray |
+| subagent **archived** (from an earlier run, log only), and the archive row | dark gray | dark gray | dark gray |
+| session agent-farm could not read (see the log) | red | red | red |
 
-Teal is agent-farm's own; Claude Code shows such a session as idle.
+So green is at work, blue at rest, gray stopped, and white names are where you can step in.
 
-After the glyph comes the session name, then the **agent strip** column: a cyan `⧉` first
-when the session runs inside the Claude desktop app, then one circle per subagent of the
-current run and one `✱` per five, in the same colors and ordered running → shell →
-starting → stale → dormant.
-`●` is working, `◉` waiting on a shell, `○` finished and dormant, `◌` still starting, `◍`
-stale, so the strip reads without color. A teammate's name is in the color Claude Code
-gives it. The strip column is as wide as the widest team on screen, and names are
-padded to a fixed column, so activity text lines up down the whole list.
+After the name comes the **agent strip** column: a cyan `⧉` first when the session runs
+inside the Claude desktop app, then one small triangle per subagent of the current run and
+one `✱` per five, in the icon colors and ordered running → starting → waiting on a
+command → dormant → stale. `▸` is at work and `▹` is not, so the strip reads without
+color. The strip column is as wide as the widest team on screen, and names are padded to
+a fixed column, so activity text lines up down the whole list.
 
-Last comes the activity text: what a waiting session is waiting for, the running tool, the
-shell it is waiting on (`shell 2m03s: Deploy the stack to dev`, in the agent's own words),
-or the last message; a subagent with nothing to say yet shows its task.
+Last comes the activity text: what a waiting session is waiting for, the running tool, or
+the last message; a subagent with nothing to say yet shows its task. A shell's row shows
+the command where a name goes, then how long it has run and what it is for, in the agent's
+own words (`◐ npm run deploy:dev  2m03s · Deploy the stack to dev`). A command gets a row
+once it has run five seconds, so a busy agent's quick commands never flicker in and out,
+and it is nested under the agent that started it: the session itself, or one of its
+subagents.
 
 ### The fleet line
 
-One `■` per head session, grouped and colored waiting → busy → shell → idle → inactive, so the
-count of each color is the count of sessions in that state, then the fleet-wide subagent
-tally in circles and asterisks. Two red notes appear only when something is wrong:
+One `■` per head session, grouped and colored waiting → busy → idle → inactive (yellow,
+green, blue, gray), so the count of each color is the count of sessions in that state, then
+the fleet-wide subagent tally in triangles and asterisks. Two red notes appear only when something is wrong:
 `it2 missing` when iTerm2's command-line tool cannot be found (the `f` key needs it), and
 `⚠ N` for warnings logged in the last ten minutes.
 
@@ -113,9 +118,11 @@ For a head session: its state and how long it has been in it ("idle for 45s"), t
 directory, the git repository and branch (with "worktree of …" for linked worktrees,
 including the ones `claude --worktree` makes), model and effort, start time, context size
 and logged cost, the session summary, your last prompt, the running tool, the shells still
-running (how long each has run, what it is for and the command itself), anything queued,
-and the last message. Desktop-app sessions add a `where` line. For a subagent: its state,
-its task, its shells and its last message.
+running (quick ones too: how long each has run, what it is for and the command itself),
+anything queued, and the last message. Desktop-app sessions add a `where` line. For a
+subagent: its state, its task, a teammate's own color (the one Claude Code shows its name
+in), its shells and its last message. For a shell: whether it is running or stale, how
+long, what it is for, the agent that started it, and the whole command.
 
 ### Ordering
 
@@ -123,7 +130,7 @@ The default ordering, **attention**, puts first what needs you:
 
 1. **waiting** for your response, longest wait first
 2. **busy** on your input, most recent prompt first
-3. **shell**, waiting on a command it started, most recent prompt first
+3. **idle while a command it started runs**, most recent prompt first
 4. **idle**, most recently gone idle first
 5. **inactive**
 
@@ -189,11 +196,12 @@ still going counts up to now while its shell is running.
 - **busy** and **idle** come straight from Claude Code's own session registry.
 - **waiting** is inferred from the transcript: a permission request without a result yet,
   or an open question or plan approval.
-- **shell** comes from the process list. Claude Code runs every command in a shell of its
-  own under the session's process, so an idle session (or a finished or silent subagent)
-  with such a shell still running is waiting on a background command, a monitor, or a
-  command moved to the background. The transcript says which agent issued the command and
-  what it is for.
+- **Shells** come from the process list. Claude Code runs every command in a shell of its
+  own under the session's process, and the transcript says which agent issued the command
+  and what it is for. An idle session or a dormant subagent with one of its shells still
+  running is waiting on it: a background command, a monitor, or a command moved to the
+  background. A shell is **stale** when the subagent that started it stopped mid-task, so
+  nothing will read its result.
 - Subagents are **running** while their transcript changed in the last 90 s, or ends mid
   tool-call and is under 15 min old; **dormant** once the head agent received their final
   message (they stay resident and can be messaged again); **stale** when they end mid

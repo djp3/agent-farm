@@ -315,5 +315,5 @@ def test_pace_tick_sits_where_an_even_pace_would_be():
 
 def test_bar_hue_follows_the_thresholds():
     assert main._limit_bar(42, 10).spans[0].style == main.BAR_HUE_TODAY
-    assert main._limit_bar(80, 10).spans[0].style == main.STATUS_STYLE["waiting"]
-    assert main._limit_bar(95, 10).spans[0].style == main.STATUS_STYLE["error"]
+    assert main._limit_bar(80, 10).spans[0].style == main.LIMIT_WARN
+    assert main._limit_bar(95, 10).spans[0].style == main.LIMIT_OVER

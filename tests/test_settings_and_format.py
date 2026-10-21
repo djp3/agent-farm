@@ -49,9 +49,9 @@ def test_agent_strip_glyphs_five_per_asterisk_and_cap():
     def agents(n, status):
         return [Agent(agent_id=str(k), name=f"a{k}", status=status) for k in range(n)]
     g = main.agent_glyphs(agents(7, "running"))
-    assert [x for x, _ in g] == ["✱", "●", "●"]
+    assert [x for x, _ in g] == ["✱", "▸", "▸"]
     g = main.agent_glyphs(agents(2, "dormant") + agents(1, "running") + agents(1, "stale"))
-    assert [x for x, _ in g] == ["●", "◍", "○", "○"]         # running → stale → dormant
+    assert g == [("▸", main.GREEN), ("▹", main.BLUE), ("▹", main.BLUE), ("▹", main.GRAY)]   # at work first
     archived = agents(3, "archived")
     for a in archived:
         a.archived = True

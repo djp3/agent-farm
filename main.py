@@ -1,8 +1,8 @@
 """
 agent-farm — a Textual TUI that watches every Claude Code instance on this Mac.
 
-Head agents are the tree rows and their subagents / teammates nest beneath them; the detail
-pane for the highlighted row sits underneath, and a usage panel (tokens per day across every
+Head agents are the tree rows and their subagents / teammates nest beneath them, with the
+shells each agent is running beneath it; the detail pane for the highlighted row sits underneath, and a usage panel (tokens per day across every
 transcript) sits to the right of the tree.
 Keys: ↑/↓ move · enter/space fold · f bring the session forward (iTerm2 tab or Claude app) ·
 d detail · u usage · m metric · s settings · r refresh · q quit
@@ -17,6 +17,7 @@ import re
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from itertools import groupby
 
@@ -114,67 +115,110 @@ def model_split_text(split: list[tuple[str, int]], width: int) -> Text:
     t.append("\n")
     return t
 
-# Status palette. The four head-session colors are the ones iTerm2 paints on its own
-# Claude status dot, so the tab bar and this monitor agree; teal, between busy green and
-# idle blue, is agent-farm's own. Rows carry the color on their triangle; the detail pane
-# spells the state out.
-STATUS_STYLE = {
-    "waiting": "bold #ff9500",        # needs you: permission prompt, question, plan approval
-    "busy": "#00d75f",                # working on your input
-    "shell": "#00afaf",               # otherwise idle while a command it started runs
-    "idle": "#5f87ff",                # finished, ready for your next instruction
-    "dead": "#888888", "unknown": "#888888",       # inactive: stale registry entry / unregistered
-    "running": "#00d75f",             # subagent working
-    "starting": "dim #00d75f",        # spawned, no transcript yet
-    "dormant": "dim #5f87ff",         # finished, resident, can be messaged again
-    "stale": "#d75fd7",               # silent too long mid tool-call, likely killed
-    "archived": "dim #888888",        # log only
-    "error": "#ff5f5f",               # the collector failed on this row (see the log)
+# Row colors. A row's icon says its state, and its name whether it is yours to talk to:
+# white for a session you can give input to (waiting for you, or idle), otherwise the
+# state's own color: green at work, blue at rest, gray stopped, dark gray archived, red
+# unreadable. The summary is colored only when it needs you (yellow) or is over.
+GREEN, BLUE, YELLOW, WHITE = "#00d75f", "#5f87ff", "#ffd75f", "#eeeeee"
+GRAY, DARK_GRAY, RED = "#8a8a8a", "#626262", "#ff5f5f"
+
+
+@dataclass(frozen=True)
+class Look:
+    icon: str                         # the triangle or circle, the fleet line's square, the tally mark
+    name: str                         # the name, in bold
+    summary: str = ""                 # the activity text, in italics; "" keeps the default ink
+
+
+SESSION_LOOK = {
+    "waiting": Look(YELLOW, WHITE, YELLOW),     # needs you: permission prompt, question, plan approval
+    "busy": Look(GREEN, GREEN),                 # working on your input
+    "idle": Look(BLUE, WHITE),                  # finished, ready for your next instruction
+    "shell": Look(BLUE, WHITE),                 # idle while a command it started runs
+    "dead": Look(GRAY, GRAY, GRAY),             # inactive: a registry entry left behind
+    "unknown": Look(GRAY, GRAY, GRAY),          # inactive: a claude process with no registry entry
+    "error": Look(RED, RED, RED),               # agent-farm could not read it (see the log)
 }
+AGENT_LOOK = {
+    "running": Look(GREEN, GREEN),
+    "starting": Look(GREEN, GREEN),             # spawned, no transcript yet
+    "shell": Look(BLUE, BLUE),                  # finished its turn, waiting on a command it started
+    "dormant": Look(BLUE, BLUE),                # finished, resident, can be messaged again
+    "stale": Look(GRAY, GRAY, GRAY),            # stopped mid-task and silent: likely killed
+    "archived": Look(DARK_GRAY, DARK_GRAY, DARK_GRAY),   # from an earlier run: a log only
+}
+SHELL_RUNNING, SHELL_STALE = Look(GREEN, GREEN), Look(GRAY, GRAY, GRAY)
+STATUS_WORD = {"shell": "idle"}               # the detail pane's word for a state, where it differs
+# The plan-limit bars warn on a scale of their own, not in the row colors.
+LIMIT_WARN, LIMIT_OVER = "bold #ff9500", RED
+
+
+def look_of(obj) -> Look | None:
+    """How a row is drawn: by its kind (session, subagent, shell, archive) and state."""
+    if isinstance(obj, Instance):
+        if obj.status_detail.startswith("collector error"):
+            return SESSION_LOOK["error"]
+        return SESSION_LOOK.get(obj.status, SESSION_LOOK["unknown"])
+    if isinstance(obj, Agent):
+        return AGENT_LOOK.get(obj.status, AGENT_LOOK["dormant"])
+    if isinstance(obj, Shell):
+        return SHELL_STALE if obj.stale else SHELL_RUNNING
+    if isinstance(obj, ArchiveGroup):
+        return AGENT_LOOK["archived"]
+    return None
+
+
+def _styled(base: str, hue: str) -> str:
+    return f"{base} {hue}" if hue else base
 
 
 TOGGLE_META = Style.from_meta({"toggle": True})     # lets a mouse click on the glyph fold the row
 
 
+def is_shell_key(key) -> bool:
+    return isinstance(key, str) and key.rsplit("/", 1)[-1].startswith("s:")
+
+
 class AgentTree(Tree):
-    """One glyph per row: ▶ / ▼ when the row has children to fold, ▷ when it has none.
-    The glyph is colored by the row's status, so state stays visible at a glance."""
+    """One icon per row, in the row's state color. Agents get triangles, filled ▶ / ▼ when
+    the row has children to fold and hollow ▷ when it has none; a shell, which never has
+    children, gets a half-filled circle."""
     ICON_NODE = "▶ "
     ICON_NODE_EXPANDED = "▼ "
     ICON_LEAF = "▷ "
+    ICON_SHELL = "◐ "
 
-    def __init__(self, *args, status_lookup=None, **kwargs):
+    def __init__(self, *args, look_lookup=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.status_lookup = status_lookup or (lambda key: "")
+        self.look_lookup = look_lookup or (lambda key: None)
 
     def render_label(self, node: TreeNode, base_style: Style, style: Style) -> Text:
         label = node._label.copy()
         label.stylize(style)
-        if node.allow_expand:
+        if is_shell_key(node.data):
+            icon, icon_style = self.ICON_SHELL, base_style
+        elif node.allow_expand:
             icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
             icon_style = base_style + TOGGLE_META
         else:
             icon = self.ICON_LEAF
             icon_style = base_style
-        status = self.status_lookup(node.data) if node.data is not None else ""
-        if status:
-            try:
-                icon_style = icon_style + Style.parse(STATUS_STYLE.get(status, ""))
-            except Exception:
-                pass
+        look = self.look_lookup(node.data) if node.data is not None else None
+        if look:
+            icon_style = icon_style + Style.parse(look.icon)
         return Text.assemble((icon, icon_style), label)
 
 
 STRIP_MAX = 16                       # cap on the agent strip column (16 asterisks = 80 agents)
-STRIP_ORDER = ("running", "shell", "starting", "stale", "dormant")
-STRIP_CIRCLE = {"running": "●", "shell": "◉", "starting": "◌", "stale": "◍", "dormant": "○"}
+STRIP_ORDER = ("running", "starting", "shell", "dormant", "stale")
+STRIP_AT_WORK, STRIP_AT_REST = "▸", "▹"
 STRIP_FIVE = "✱"                      # one asterisk tallies five agents of that state
 
 
 def agent_glyphs(agents: list[Agent]) -> list[tuple[str, str]]:
-    """One circle per current-run subagent, one asterisk per five, colored by state and
-    ordered running → shell → starting → stale → dormant. Filled means working, ringed
-    means a shell, hollow means finished, so it reads without color."""
+    """One small triangle per current-run subagent, one asterisk per five, in its icon color
+    and ordered running → starting → shell → dormant → stale. Filled means at work and
+    hollow means not, so it reads without color too."""
     counts = {st: 0 for st in STRIP_ORDER}
     for a in agents:
         if not a.archived and a.status in counts:
@@ -182,9 +226,10 @@ def agent_glyphs(agents: list[Agent]) -> list[tuple[str, str]]:
     glyphs: list[tuple[str, str]] = []
     for st in STRIP_ORDER:
         n = counts[st]
-        style = STATUS_STYLE.get(st, "")
+        style = AGENT_LOOK[st].icon
+        mark = STRIP_AT_WORK if st in ("running", "starting") else STRIP_AT_REST
         glyphs += [(STRIP_FIVE, style)] * (n // 5)
-        glyphs += [(STRIP_CIRCLE[st], style)] * (n % 5)
+        glyphs += [(mark, style)] * (n % 5)
     if len(glyphs) > STRIP_MAX:
         glyphs = glyphs[:STRIP_MAX - 1] + [("+", "dim")]
     return glyphs
@@ -195,7 +240,7 @@ APP_MARK = ("⧉", "cyan")              # the session runs inside the Claude des
 
 def row_glyphs(i: Instance) -> list[tuple[str, str]]:
     """What a head row shows in the strip column: the desktop-app marker, then its agents.
-    Keeping the marker in that column lines it up with the circles on every row instead of
+    Keeping the marker in that column lines it up with the tallies on every row instead of
     trailing the name."""
     return ([APP_MARK] if i.is_app else []) + agent_glyphs(i.agents)
 
@@ -214,22 +259,26 @@ def agent_strip(glyphs: list[tuple[str, str]], width: int) -> Text:
 
 
 HEAD_GLYPH = "■"                      # one square per head session in the fleet line
-HEAD_ORDER = ("waiting", "busy", "shell", "idle", "dead", "unknown")
+HEAD_ORDER = ("waiting", "busy", "idle", "dead", "unknown")
+
+
+def _fleet_group(i: Instance) -> str:
+    return "idle" if i.status == "shell" else i.status      # drawn as idle, its shells beneath it
 
 
 def fleet_line(instances: list[Instance], show_text: bool,
                error_count: int, it2_ok: bool) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
-    by state (waiting → busy → shell → idle → inactive), the fleet-wide subagent tally in the same
-    circles-and-asterisks system as the rows, then red notes only when it2 is missing or
+    by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
+    triangles-and-asterisks system as the rows, then red notes only when it2 is missing or
     warnings were logged recently.
     With the status-text setting on, the counts are also spelled out."""
     live = [i for i in instances if i.alive]
     t = Text()
     for st in HEAD_ORDER:
-        n = sum(1 for i in instances if (i.status == st and (i.alive or st in ("dead", "unknown"))))
+        n = sum(1 for i in instances if (_fleet_group(i) == st and (i.alive or st in ("dead", "unknown"))))
         if n:
-            t.append(HEAD_GLYPH * n, style=STATUS_STYLE.get(st, ""))
+            t.append(HEAD_GLYPH * n, style=SESSION_LOOK[st].icon)
     if not instances:
         t.append("no Claude instances", style="dim")
     all_agents = [a for i in live for a in i.agents]
@@ -245,13 +294,13 @@ def fleet_line(instances: list[Instance], show_text: bool,
         running = sum(1 for a in all_agents if a.status == "running")
         t.append("  ")
         t.append(f"{len(live)} sessions · {busy} busy · {waiting} waiting · "
-                 + (f"{shell} in a shell · " if shell else "") + f"{running} agents running")
+                 + (f"{shell} waiting on a shell · " if shell else "") + f"{running} agents running")
     if not it2_ok:
         t.append("  ")
-        t.append("it2 missing — focus (f) unavailable", style=STATUS_STYLE["error"])
+        t.append("it2 missing — focus (f) unavailable", style=RED)
     if error_count:                      # recent problems only; the tooltip has the total
         t.append("  ")
-        t.append(f"⚠ {error_count} (see the log)", style=STATUS_STYLE["error"])
+        t.append(f"⚠ {error_count} (see the log)", style=RED)
     return t
 
 
@@ -263,18 +312,23 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     agents = [a for i in live for a in i.agents if not a.archived]
     ag = {st: sum(1 for a in agents if a.status == st) for st in STRIP_ORDER}
     archived = sum(1 for i in instances for a in i.agents if a.archived)
+    shells = [s for i in live for s in i.shells]
     lines = [
         f"{len(instances)} Claude session{'s' if len(instances) != 1 else ''}: "
-        f"{counts['waiting']} waiting for you, {counts['busy']} busy, {counts['shell']} running a shell, "
-        f"{counts['idle']} idle, {inactive} inactive",
-        "  one ■ per session, colored orange / green / teal / blue / grey in that order",
+        f"{counts['waiting']} waiting for you, {counts['busy']} busy, {counts['idle'] + counts['shell']} idle"
+        + (f" ({counts['shell']} waiting on a shell)" if counts["shell"] else "") + f", {inactive} inactive",
+        "  one ■ per session, colored yellow / green / blue / gray in that order",
         f"{len(agents)} current-run subagent{'s' if len(agents) != 1 else ''}: "
-        f"{ag['running']} running, {ag['shell']} in a shell, {ag['starting']} starting, {ag['stale']} stale, "
-        f"{ag['dormant']} dormant"
+        f"{ag['running']} running, {ag['starting']} starting, {ag['shell']} waiting on a shell, "
+        f"{ag['dormant']} dormant, {ag['stale']} stale"
         + (f"  (+{archived} archived, not shown)" if archived else ""),
-        "  ● running  ◉ shell  ◌ starting  ◍ stale  ○ dormant · ✱ = five of a kind",
-        f"ordering: {ordering.name} — {ordering.description}",
+        "  ▸ at work  ▹ at rest (blue) or stopped (gray) · ✱ = five of a kind",
     ]
+    if shells:
+        stale = sum(1 for s in shells if s.stale)
+        lines.append(f"{len(shells)} shell{'s' if len(shells) != 1 else ''} running"
+                     + (f" ({stale} whose agent has stopped)" if stale else ""))
+    lines.append(f"ordering: {ordering.name} — {ordering.description}")
     if not it2_ok:
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
@@ -291,9 +345,9 @@ def _fit_name(name: str, width: int) -> str:
     return name.ljust(width)
 
 
-def _status_words(status: str, since: float | None, now: float) -> Text:
+def _status_words(status: str, since: float | None, now: float, look: Look | None) -> Text:
     t = Text("  ")
-    t.append(status, style=STATUS_STYLE.get(status, ""))
+    t.append(STATUS_WORD.get(status, status), style=look.icon if look else "")
     if since:
         t.append(" ")
         t.append(fmt_age(since, now), style="dim")
@@ -305,45 +359,63 @@ def instance_label(i: Instance, now: float, show_status: bool = False, name_widt
     """Row = name · strip (app marker, agents) · activity. The name comes first so subagent
     rows, indented by the tree guides, visibly hang under their lead's name; the strip sits
     in its own aligned column right after the name field."""
+    look = look_of(i)
     t = Text()
     name = i.name or f"pid {i.pid}"
-    t.append(_fit_name(name, name_width), style="bold")
+    t.append(_fit_name(name, name_width), style=_styled("bold", look.name))
     glyphs = row_glyphs(i)
     if strip_width or glyphs:
         t.append(" ")
         t.append_text(agent_strip(glyphs, strip_width))
     if show_status:
-        t.append_text(_status_words(i.status, i.status_since, now))
+        t.append_text(_status_words(i.status, i.status_since, now, look))
     act = i.activity
     if act:
         t.append("  ")
-        t.append(act, style="italic" if i.status != "waiting" else "yellow")
+        t.append(act, style=_styled("italic", look.summary))
     return t
 
 
-# Claude Code's own colors for named agents (its default theme), so a teammate's name reads
-# the same here as in its session. The meta file holds only the name. Passed on as is, pink
-# and orange would not parse, and the rest are basic ANSI colors that Textual's dark theme
-# repaints: its blue is a violet, its yellow an orange.
+# Claude Code's own colors for named agents (its default theme). Rows color names by state,
+# so a teammate's color is shown in the detail pane only. The meta file holds just the
+# name, and passed on as is, pink and orange would not parse and the rest are basic ANSI
+# colors that Textual's dark theme repaints (its blue is a violet).
 AGENT_COLORS = {"red": "#dc2626", "blue": "#6a9bcc", "green": "#16a34a", "yellow": "#ca8a04",
                 "purple": "#827dbd", "orange": "#d97757", "pink": "#c46686", "cyan": "#0891b2"}
 
 
-def agent_name_style(a: Agent, base: str = "bold") -> str:
-    hue = AGENT_COLORS.get(a.color, "")
-    return f"{base} {hue}" if hue else base
-
-
 def agent_label(a: Agent, now: float, show_status: bool = False, name_width: int = 0) -> Text:
+    look = look_of(a)
     t = Text()
     name = a.name + (f" ({a.agent_type})" if a.agent_type and a.agent_type != a.name else "")
-    t.append(_fit_name(name, name_width), style=agent_name_style(a))
+    t.append(_fit_name(name, name_width), style=_styled("bold", look.name))
     if show_status:
-        t.append_text(_status_words(a.status, a.last_ts, now))
+        t.append_text(_status_words(a.status, a.last_ts, now, look))
     act = a.activity
     if act:
         t.append("  ")
-        t.append(act, style="italic")
+        t.append(act, style=_styled("italic", look.summary))
+    return t
+
+
+SHELL_ROW_AFTER_S = 5.0   # a command gets a row once it has run this long, so quick ones never flicker
+
+
+def shell_rows(shells: list[Shell], now: float) -> list[Shell]:
+    return [s for s in shells if now - s.started >= SHELL_ROW_AFTER_S]
+
+
+def shell_command_line(s: Shell) -> str:
+    return s.command.strip().split("\n", 1)[0]
+
+
+def shell_label(s: Shell, now: float, name_width: int = 0) -> Text:
+    """Shell row = the command in the name column · how long it has run · what it is for."""
+    look = look_of(s)
+    t = Text()
+    t.append(_fit_name(shell_command_line(s), name_width), style=_styled("bold", look.name))
+    t.append("  ")
+    t.append(fmt_age(s.started, now) + (f" · {s.label}" if s.label else ""), style=_styled("italic", look.summary))
     return t
 
 
@@ -372,19 +444,18 @@ def _queued_summary(content: str) -> str:
     return f"message from another session ({src})" if src else "message from another session"
 
 
-def _shell_lines(out: Text, shells: list[Shell], now: float, agents: list[Agent] = ()) -> None:
-    """The detail pane's list of running shells: how long each has run, what it is for and,
-    when the transcript named it, the command itself."""
+def _shell_lines(out: Text, shells: list[Shell], now: float) -> None:
+    """The detail pane's list of running shells, quick ones included: how long each has run,
+    what it is for and, when the transcript named it, the command itself."""
     if not shells:
         return
-    names = {a.agent_id: a.name for a in agents}
     out.append("shells  (commands still running)\n", style="bold dim")
     for s in shells:
-        command = s.command.strip().split("\n", 1)[0][:160]
+        command = shell_command_line(s)[:160]
         out.append(f"{fmt_age(s.started, now):>7}  ", style="dim")
-        out.append(s.label or command, style=STATUS_STYLE["shell"])
+        out.append(s.label or command, style=look_of(s).name)
         if s.owner:
-            out.append(f"  ({names.get(s.owner, s.owner)})", style="dim")
+            out.append(f"  ({s.owner_name or s.owner})", style="dim")
         out.append("\n")
         if s.label:
             out.append(f"         $ {command}\n", style="dim")
@@ -404,9 +475,9 @@ def detail_text(obj, now: float) -> Text:
         i = obj
         out.append(i.name or f"pid {i.pid}", style="bold underline")
         out.append("\n")
-        kv("status", f"{i.status} for {fmt_age(i.status_since, now)}"
+        kv("status", f"{STATUS_WORD.get(i.status, i.status)} for {fmt_age(i.status_since, now)}"
            + (f"  ({i.status_detail})" if i.status_detail else ""),
-           STATUS_STYLE.get(i.status, ""))
+           look_of(i).icon)
         if i.is_app:
             kv("where", "Claude desktop app  (f brings the app forward)", "cyan")
         kv("cwd", i.cwd or "(unknown)")
@@ -448,7 +519,7 @@ def detail_text(obj, now: float) -> Text:
                 name, summ, ts = tr.current_tool
                 out.append(f"running tool  {fmt_age(ts, now)}\n", style="bold dim")
                 out.append(f"{name}: {summ}\n\n", style="green")
-            _shell_lines(out, i.shells, now, i.agents)
+            _shell_lines(out, i.shells, now)
             # The queue lives in the process's memory, so anything queued before this
             # process started cannot still be waiting.
             queued = [q for q in tr.queued
@@ -479,12 +550,15 @@ def detail_text(obj, now: float) -> Text:
                    "remain. Expand the row to browse them.\n", style="dim")
     elif isinstance(obj, Agent):
         a = obj
-        out.append(a.name, style=agent_name_style(a, "bold underline"))
+        out.append(a.name, style="bold underline")
         out.append("\n")
         kv("status", f"{a.status} for {fmt_age(a.last_ts, now)}"
-           + ("  (log only, from an earlier run)" if a.archived else ""),
-           STATUS_STYLE.get(a.status, ""))
+           + ("  (log only, from an earlier run)" if a.archived else "")
+           + ("  (waiting on a command it started)" if a.status == "shell" else ""),
+           look_of(a).icon)
         kv("type", a.agent_type)
+        if a.color in AGENT_COLORS:
+            kv("color", f"{a.color}  (Claude Code's color for this teammate)", AGENT_COLORS[a.color])
         kv("task", a.description)
         kv("model", a.model)
         kv("started", fmt_age(a.started_ts, now) + " ago")
@@ -501,6 +575,17 @@ def detail_text(obj, now: float) -> Text:
             if tr.last_text:
                 out.append("last message\n", style="bold dim")
                 out.append(tr.last_text.strip()[:1500] + "\n")
+    elif isinstance(obj, Shell):
+        s = obj
+        out.append(shell_command_line(s), style="bold underline")
+        out.append("\n")
+        kv("status", ("stale" if s.stale else "running") + f" for {fmt_age(s.started, now)}"
+           + ("  (the agent that started it has stopped, so nothing will read its result)" if s.stale else ""),
+           look_of(s).icon)
+        kv("for", s.label)
+        kv("agent", s.owner_name)
+        out.append("\ncommand\n", style="bold dim")
+        out.append(s.command.strip()[:1500] + "\n")
     return out
 
 
@@ -520,7 +605,7 @@ def fleet_working(instances: list[Instance]) -> bool:
 
 
 def window_title(instances: list[Instance]) -> str:
-    n = sum(1 for i in instances if i.alive and i.status != "idle")
+    n = sum(1 for i in instances if i.alive and i.status not in ("idle", "shell"))
     return f"{WINDOW_TITLE} {CHICKEN * n}" if n else WINDOW_TITLE
 
 
@@ -546,7 +631,7 @@ def _limit_bar(pct: float, width: int, elapsed: float | None = None) -> Text:
     `elapsed` (0..1, how far through its window the clock is) adds a tick where an even
     pace would be: fill that stops short of the tick is under pace, fill past it is ahead.
     Over the fill the tick is a notch, over the track a bright line."""
-    hue = STATUS_STYLE["error"] if pct >= 90 else STATUS_STYLE["waiting"] if pct >= 75 else BAR_HUE_TODAY
+    hue = LIMIT_OVER if pct >= 90 else LIMIT_WARN if pct >= 75 else BAR_HUE_TODAY
     filled = _bar(pct / 100, width).rstrip()
     cells = [(ch, hue) for ch in filled] + [("·", "dim")] * (width - len(filled))
     if elapsed is not None and width > 0:
@@ -601,7 +686,7 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
         head += " · fetching…"
     t.append(head + "\n", style="dim")
     if rep.error:
-        t.append(f"unavailable: {rep.error}\n", style="dim" if rep.windows else STATUS_STYLE["error"])
+        t.append(f"unavailable: {rep.error}\n", style="dim" if rep.windows else RED)
     if not rep.windows:
         return t
     label_w = max(len(w.label) for w in rep.windows)
@@ -757,6 +842,8 @@ def agent_fingerprint(inst: Instance) -> dict[str, tuple]:
             continue
         text = a.transcript.last_text if a.transcript else ""
         fp[a.agent_id] = (a.status, text[:300])
+    if inst.status == "shell":            # waiting on its own command: a new one's row is news
+        fp["shells"] = tuple(s.pid for s in shell_rows(inst.own_shells, time.time()))
     return fp
 
 
@@ -910,7 +997,7 @@ class AgentFarm(App):
             with Horizontal(id="top"):
                 with Vertical(id="left"):
                     yield Static(Text("starting…", style="dim"), id="fleet")
-                    tree: Tree = AgentTree("Claude instances", id="tree", status_lookup=self._status_for_key)
+                    tree: Tree = AgentTree("Claude instances", id="tree", look_lookup=self._look_for_key)
                     tree.show_root = False
                     tree.guide_depth = GUIDE_DEPTH
                     yield tree
@@ -1098,15 +1185,8 @@ class AgentFarm(App):
             fleet.tooltip = tooltip
 
     # ---- tree building ------------------------------------------------------
-    def _status_for_key(self, key: str) -> str:
-        obj = self.objects.get(key)
-        if isinstance(obj, Instance) and obj.status_detail.startswith("collector error"):
-            return "error"
-        if isinstance(obj, (Instance, Agent)):
-            return obj.status
-        if isinstance(obj, ArchiveGroup):
-            return "archived"
-        return ""
+    def _look_for_key(self, key: str) -> Look | None:
+        return look_of(self.objects.get(key))
 
     def _name_width(self, depth: int, tree: Tree | None = None) -> int:
         """Name column so that activity text starts in the same column on every row.
@@ -1126,8 +1206,12 @@ class AgentFarm(App):
         return f"i:{inst.pid}"          # pid, not session id: a stale registry entry can share one
 
     def _upsert_instance(self, tree: Tree, inst: Instance, now: float, width: int,
-                         seen: set[str], expand: bool = True) -> TreeNode:
-        """Add or refresh one head-agent row and its subagent leaves."""
+                         seen: set[str], expanded: dict[str, bool] | None = None) -> TreeNode:
+        """Add or refresh one head-agent row and everything under it, in a fixed order: its
+        own shells, its current-run subagents (each with its shells), the archive last. A
+        new row is inserted at its place, so rows already there never move. `expanded`
+        holds fold states to restore on a rebuild."""
+        expanded = expanded or {}
         key = self._ikey(inst)
         seen.add(key)
         self.objects[key] = inst
@@ -1136,68 +1220,87 @@ class AgentFarm(App):
                                self._strip_width)
         label.truncate(width, overflow="ellipsis")
         if node is None:
-            node = tree.root.add(label, data=key, expand=expand)
+            node = tree.root.add(label, data=key, expand=expanded.get(key, True))
             self.nodes[key] = node
         else:
             node.set_label(label)
         current = [a for a in inst.agents if not a.archived]
         archived = [a for a in inst.agents if a.archived]
-        node.allow_expand = bool(current or archived)
+        own = shell_rows(inst.own_shells, now)
+        node.allow_expand = bool(current or archived or own)
+        gkey = f"{key}/archived"
+        group = self.nodes.get(gkey)
+        if group is not None and group.parent is not node:
+            group = None
 
-        def upsert_leaf(a: Agent, parent: TreeNode, depth: int) -> None:
+        def place(parent: TreeNode, stale: TreeNode | None) -> TreeNode | None:
+            """Drop a node whose row moved to another parent; the caller re-creates it."""
+            if stale is not None and stale.parent is not parent:
+                try:
+                    stale.remove()
+                except Exception:
+                    pass
+                return None
+            return stale
+
+        def upsert_shell(sh: Shell, parent: TreeNode, pkey: str, depth: int,
+                         before: TreeNode | None = None) -> None:
+            skey = f"{pkey}/s:{sh.pid}"
+            seen.add(skey)
+            self.objects[skey] = sh
+            slabel = shell_label(sh, now, self._name_width(depth, tree))
+            slabel.truncate(width - (depth + 1) * tree.guide_depth, overflow="ellipsis")
+            snode = place(parent, self.nodes.get(skey))
+            if snode is None:
+                self.nodes[skey] = parent.add_leaf(slabel, data=skey, before=before)
+            else:
+                snode.set_label(slabel)
+
+        def upsert_agent(a: Agent, parent: TreeNode, depth: int, before: TreeNode | None = None) -> None:
             akey = f"{key}/a:{a.agent_id}"
             seen.add(akey)
             self.objects[akey] = a
             alabel = agent_label(a, now, self.settings.show_status_text, self._name_width(depth, tree))
             alabel.truncate(width - 2 * tree.guide_depth, overflow="ellipsis")
-            anode = self.nodes.get(akey)
-            if anode is not None and anode.parent is not parent:     # moved between live/archived
-                try:
-                    anode.remove()
-                except Exception:
-                    pass
-                anode = None
+            rows = [] if a.archived else shell_rows(a.shells, now)
+            anode = place(parent, self.nodes.get(akey))     # None too when it moved to the archive
             if anode is None:
-                self.nodes[akey] = parent.add_leaf(alabel, data=akey)
+                anode = parent.add(alabel, data=akey, before=before, expand=expanded.get(akey, True),
+                                   allow_expand=bool(rows))
+                self.nodes[akey] = anode
             else:
                 anode.set_label(alabel)
+                if rows and not anode.allow_expand:
+                    anode.expand()               # its first shell: show it, even if folded before
+                anode.allow_expand = bool(rows)
+            for sh in rows:
+                upsert_shell(sh, anode, akey, depth + 1)
 
-        # 1) current-run subagents sit directly under the head
+        # 1) the head's own shells, ahead of its subagents
+        first_agent = next((c for c in node.children if "/a:" in str(c.data)), None)
+        for sh in own:
+            upsert_shell(sh, node, key, 1, before=first_agent or group)
+        # 2) current-run subagents, ahead of the archive
         for a in current:
-            upsert_leaf(a, node, 1)
-
-        # 2) the archived accordion always comes last. If a new live agent was appended
-        #    after it, rebuild the group at the end (rare: only when a team grows).
-        gkey = f"{key}/archived"
-        group = self.nodes.get(gkey)
+            upsert_agent(a, node, 1, before=group)
+        # 3) the archived accordion, always last
         if archived:
-            if group is not None and node.children and node.children[-1] is not group:
-                was_open = group.is_expanded
-                for akey in [k for k in self.nodes if k.startswith(f"{key}/a:")]:
-                    if self.nodes[akey].parent is group:
-                        self.nodes.pop(akey, None)
-                try:
-                    group.remove()
-                except Exception:
-                    pass
-                group = None
-            else:
-                was_open = False
             glabel = Text()
-            glabel.append(f"archived ({len(archived)})", style="dim")
+            dark = AGENT_LOOK["archived"]
+            glabel.append(f"archived ({len(archived)})", style=_styled("bold", dark.name))
             glabel.append("  ")
-            glabel.append("earlier runs of this session · logs only", style="dim italic")
+            glabel.append("earlier runs of this session · logs only", style=_styled("italic", dark.summary))
             glabel.truncate(width - tree.guide_depth, overflow="ellipsis")
             if group is None:
-                group = node.add(glabel, data=gkey, expand=was_open)
+                group = node.add(glabel, data=gkey, expand=expanded.get(gkey, False))
                 self.nodes[gkey] = group
             else:
                 group.set_label(glabel)
             seen.add(gkey)
             self.objects[gkey] = ArchiveGroup(inst, archived)
             for a in archived:
-                upsert_leaf(a, group, 2)
-        # (a group with nothing left in it is dropped by the stale-key sweep)
+                upsert_agent(a, group, 2)
+        # (a group with nothing left in it, and rows that ended, go in the stale-key sweep)
         return node
 
     def _auto_expand_on_updates(self, instances: list[Instance]) -> None:
@@ -1220,17 +1323,13 @@ class AgentFarm(App):
         """Re-create the rows in `instances` order, keeping the cursor on the same
         instance and each row's fold state. Only called when the order changed."""
         cursor_key = tree.cursor_node.data if tree.cursor_node is not None else None
-        expanded = {k: n.is_expanded for k, n in self.nodes.items() if "/a:" not in k}
+        expanded = {k: n.is_expanded for k, n in self.nodes.items() if not is_shell_key(k)}
         tree.clear()
         self.nodes.clear()
         self.objects.clear()
         seen: set[str] = set()
         for inst in instances:
-            self._upsert_instance(tree, inst, now, width, seen,
-                                  expand=expanded.get(self._ikey(inst), True))
-            gkey = f"{self._ikey(inst)}/archived"
-            if gkey in self.nodes and expanded.get(gkey, False):
-                self.nodes[gkey].expand()
+            self._upsert_instance(tree, inst, now, width, seen, expanded)
         if not tree.root.is_expanded:
             tree.root.expand()
         target = self.nodes.get(cursor_key) if cursor_key else None

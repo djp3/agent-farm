@@ -528,6 +528,8 @@ class Shell:
     command: str                     # as the shell was given it
     label: str = ""                  # the model's description of it, from the transcript
     owner: str = ""                  # agent_id of the subagent that issued it; "" for the head
+    owner_name: str = ""             # that subagent's name
+    stale: bool = False              # still running, but the agent that started it has stopped
 
 
 def _shell_command(script: str) -> str:
@@ -535,13 +537,6 @@ def _shell_command(script: str) -> str:
     undone; the whole script if the wrapper ever changes shape."""
     m = _EVAL_RE.search(script or "")
     return clean_text(m.group(1).replace("'\"'\"'", "'") if m else script)
-
-
-def shell_activity(shells: list[Shell]) -> str:
-    """'shell 2m03s: Deploy the stack to dev', for the one running longest."""
-    s = min(shells, key=lambda s: s.started)
-    more = f"  (+{len(shells) - 1} more)" if len(shells) > 1 else ""
-    return f"shell {fmt_age(s.started)}: {s.label or _first_line(s.command, 120)}{more}"
 
 
 @dataclass
@@ -562,8 +557,6 @@ class Agent:
 
     @property
     def activity(self) -> str:
-        if self.status == "shell":
-            return shell_activity(self.shells)
         t = self.transcript
         if not t:
             return self.description
@@ -621,8 +614,6 @@ class Instance:
 
     @property
     def activity(self) -> str:
-        if self.status == "shell":                   # from the process table, transcript or not
-            return shell_activity(self.own_shells)
         t = self.transcript
         if not t:
             return ""
@@ -1049,7 +1040,8 @@ class Collector:
         """Name each shell from the transcript that issued its command and give it to that
         agent: the head, or the subagent whose command it is (the latest issue before the
         shell started, when several ran the same command). An agent with nothing else going
-        on while one of its shells runs is waiting on it: the 'shell' state."""
+        on while one of its shells runs is waiting on it: the 'shell' state. A shell whose
+        subagent has stopped mid-task (stale) will never be read: it is stale too."""
         sources = [("", inst.transcript)] + [(a.agent_id, a.transcript) for a in inst.agents if not a.archived]
         for s in shells:
             best = None
@@ -1061,12 +1053,16 @@ class Collector:
             if best:
                 s.owner, s.label = best[0], best[1]
         inst.shells = sorted(shells, key=lambda s: s.started)
+        for s in inst.shells:
+            s.owner_name = inst.name
         for a in inst.agents:
             a.shells = [s for s in inst.shells if s.owner == a.agent_id]
-            if a.shells and a.status in ("dormant", "stale"):
+            for s in a.shells:
+                s.owner_name, s.stale = a.name, a.status == "stale"
+            if a.shells and a.status == "dormant":
                 a.status = "shell"
         if inst.status == "idle" and inst.own_shells:
-            inst.status, inst.status_detail = "shell", "otherwise idle; a command it started is still running"
+            inst.status, inst.status_detail = "shell", "waiting on a command it started"
 
     def _fill_instance(self, inst: Instance, ttys: dict[int, str], shells: list[Shell], now: float) -> None:
         if inst.alive:
@@ -1132,7 +1128,7 @@ def fmt_tokens(n: int) -> str:
 
 
 STATUS_GLYPH = {
-    "busy": "●", "idle": "○", "shell": "◉", "waiting": "◐", "dead": "✕", "unknown": "?",
+    "busy": "●", "idle": "○", "shell": "○", "waiting": "◐", "dead": "✕", "unknown": "?",
     "running": "●", "dormant": "✓", "archived": "▫", "starting": "◌", "stale": "◍",
 }
 
