@@ -88,6 +88,7 @@ state's color. The summary after it is colored only when it needs you or is over
 | session agent-farm could not read (see the log) | red | red | red |
 
 So green is at work, blue at rest, gray stopped, and white names are where you can step in.
+The selected row keeps its colors on a navy bar.
 
 After the name comes the **agent strip** column: a cyan `⧉` first when the session runs
 inside the Claude desktop app, then one small triangle per subagent of the current run and
