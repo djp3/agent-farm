@@ -57,6 +57,9 @@ From top to bottom:
 | r | refresh now |
 | q | quit |
 
+A click selects the row under it, and folds or unfolds it on the triangle. That works from
+another app too: the click that brings agent-farm forward also lands on the row.
+
 The View menu changes the text size (⌘+ / ⌘-), picks any fixed-pitch font installed on
 the Mac, and toggles font smoothing; the window remembers all of that with its size and
 place. On a non-Retina display a larger size or a font such as Menlo reads steadier.

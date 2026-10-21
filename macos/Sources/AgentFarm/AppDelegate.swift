@@ -19,6 +19,13 @@ enum Theme {
     }
 }
 
+/// The terminal view, taking the click that brings the window forward as a click too. AppKit
+/// spends the first click on a window in the background on activating it, so picking a row
+/// in agent-farm from another app took two clicks; now the monitor gets that first one.
+final class FirstClickTerminalView: LocalProcessTerminalView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// Hosts the Python TUI (agent-farm-core, a PyInstaller build of main.py) inside a
 /// SwiftTerm view and wires Sparkle for updates. Everything the monitor does still
 /// happens in Python; this file only provides the window, the pty and the menus.
@@ -86,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         w.center()
         w.setFrameAutosaveName("agent-farm.main")
 
-        let t = LocalProcessTerminalView(frame: w.contentView!.bounds)
+        let t = FirstClickTerminalView(frame: w.contentView!.bounds)
         t.autoresizingMask = [.width, .height]
         t.processDelegate = self
         t.nativeBackgroundColor = Theme.background
