@@ -182,15 +182,19 @@ def is_shell_key(key) -> bool:
 class AgentTree(Tree):
     """One icon per row, in the row's state color. Agents get triangles, filled ▶ / ▼ when
     the row has children to fold and hollow ▷ when it has none; a shell, which never has
-    children, gets a half-filled circle."""
+    children, gets a half-filled circle.
+    Only the triangle folds a row under the mouse: a click on the name selects it and leaves
+    it as it was. From the keyboard, enter and space fold."""
     ICON_NODE = "▶ "
     ICON_NODE_EXPANDED = "▼ "
     ICON_LEAF = "▷ "
     ICON_SHELL = "◐ "
+    BINDINGS = [Binding("enter", "toggle_node", "Toggle", show=False)]
 
     def __init__(self, *args, look_lookup=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.look_lookup = look_lookup or (lambda key: None)
+        self.auto_expand = False           # selecting (a click on the name) never folds
 
     def render_label(self, node: TreeNode, base_style: Style, style: Style) -> Text:
         label = node._label.copy()
