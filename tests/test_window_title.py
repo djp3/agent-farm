@@ -21,7 +21,8 @@ def test_title_sequence_is_osc_zero():
 def test_chickens_count_live_sessions_that_are_not_idle():
     assert main.window_title([]) == "🌾 agent-farm"
     assert main.window_title([inst(1, "idle")]) == "🌾 agent-farm"
-    farm = [inst(1, "busy"), inst(2, "waiting"), inst(3, "idle"), inst(4, "busy", alive=False)]
+    farm = [inst(1, "busy"), inst(2, "waiting"), inst(3, "idle"), inst(4, "busy", alive=False),
+            inst(5, "shell")]                  # idle while its own command runs: drawn as idle
     assert main.window_title(farm) == "🌾 agent-farm 🐓🐓"
 
 
