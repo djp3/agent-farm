@@ -57,8 +57,9 @@ From top to bottom:
 | r | refresh now |
 | q | quit |
 
-A click selects the row under it, and folds or unfolds it on the triangle. That works from
-another app too: the click that brings agent-farm forward also lands on the row.
+A click on a row selects it and leaves it folded or unfolded as it was; only a click on its
+triangle folds or unfolds it. That works from another app too: the click that brings
+agent-farm forward also lands on the row.
 
 The View menu changes the text size (⌘+ / ⌘-), picks any fixed-pitch font installed on
 the Mac, and toggles font smoothing; the window remembers all of that with its size and
