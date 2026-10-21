@@ -17,8 +17,8 @@ import re
 import signal
 import sys
 import time
-import time
 from datetime import datetime
+from itertools import groupby
 
 from rich.style import Style
 from rich.text import Text
@@ -495,28 +495,47 @@ def _bar(frac: float, width: int) -> str:
     return s.ljust(width)
 
 
-def _limit_bar(pct: float, width: int) -> Text:
+PACE_TICK = "┃"
+PACE_TICK_ON_TRACK = "bold #ffffff"
+PACE_TICK_NOTCH = "#121212"   # the panel background, so over the fill the tick is a gap cut into it
+
+
+def _limit_bar(pct: float, width: int, elapsed: float | None = None) -> Text:
     """A budget bar: the used share in green, orange from 75% and red from 90%, over a dim
-    track so the unused share stays visible (the percent beside it says the same)."""
+    track so the unused share stays visible (the percent beside it says the same).
+    `elapsed` (0..1, how far through its window the clock is) adds a tick where an even
+    pace would be: fill that stops short of the tick is under pace, fill past it is ahead.
+    Over the fill the tick is a notch, over the track a bright line."""
     hue = STATUS_STYLE["error"] if pct >= 90 else STATUS_STYLE["waiting"] if pct >= 75 else BAR_HUE_TODAY
     filled = _bar(pct / 100, width).rstrip()
+    cells = [(ch, hue) for ch in filled] + [("·", "dim")] * (width - len(filled))
+    if elapsed is not None and width > 0:
+        i = min(width - 1, int(elapsed * width))
+        whole = int(max(0.0, min(1.0, pct / 100)) * width)          # cells filled edge to edge
+        cells[i] = (PACE_TICK, Style(color=PACE_TICK_NOTCH, bgcolor=Style.parse(hue).color)
+                    if i < whole else PACE_TICK_ON_TRACK)
     t = Text()
-    t.append(filled, style=hue)
-    t.append("·" * (width - len(filled)), style="dim")
+    for style, run in groupby(cells, key=lambda c: c[1]):
+        t.append("".join(ch for ch, _ in run), style=style)
     return t
 
 
-def fmt_reset(at: datetime | None, now: datetime | None = None) -> str:
-    """'resets 3:12 PM' today, 'resets Thu 10 AM' on another day, in local time."""
+def fmt_countdown(at: datetime | None, now: float) -> str:
+    """Time left until a window resets: '4d 5h', '2h54m', '38m'. 'reset' once it has: the
+    reading is from before the reset, so its bar is out of date until the next fetch."""
     if at is None:
         return ""
-    local = at.astimezone()
-    now = now or datetime.now().astimezone()
-    h12 = local.hour % 12 or 12
-    ampm = "AM" if local.hour < 12 else "PM"
-    if local.date() == now.date():
-        return f"resets {h12}:{local.minute:02d} {ampm}"
-    return f"resets {local:%a} {h12} {ampm}"
+    left = int(at.timestamp() - now)
+    if left <= 0:
+        return "reset"
+    d, rem = divmod(left, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d{h:>2}h"
+    if h:
+        return f"{h}h{m:02d}m"
+    return f"{m}m" if m else "<1m"
 
 
 def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float | None = None,
@@ -546,16 +565,15 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     if not rep.windows:
         return t
     label_w = max(len(w.label) for w in rep.windows)
-    reset_w = 16                                        # "resets Thu 10 AM"
+    reset_w = 6                                         # "13h05m" left until the window resets
     bar_w = max(8, width - label_w - 1 - 1 - 4 - 2 - reset_w)
-    local_now = datetime.now().astimezone()
     for w in rep.windows:
         t.append(f"{w.label:<{label_w}} ", style="dim")
-        t.append_text(_limit_bar(w.used_pct, bar_w))
+        t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now)))
         t.append(f" {int(w.used_pct):>3}%", style="bold" if w.used_pct >= 75 else "")
-        r = fmt_reset(w.resets_at, local_now)
-        if r:
-            t.append(f"  {r}", style="dim")
+        left = fmt_countdown(w.resets_at, now)
+        if left:
+            t.append(f"  {left:>{reset_w}}", style="dim")
         t.append("\n")
     return t
 

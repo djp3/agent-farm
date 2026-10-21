@@ -147,8 +147,12 @@ each session, so today's sessions are not in it yet.
 
 **Plan limits.** With the setting on, a block above the days shows what `/usage` shows in
 Claude Code: one bar per rate-limit window (the current 5-hour session, the current week,
-and per-model weeks such as Fable on plans that have them) with the percent used and when it resets.
-Green turns orange at 75% and red at 90%. Those numbers exist nowhere on disk, so
+and per-model weeks such as Fable on plans that have them) with the percent used and the
+time left until it resets. Green turns orange at 75% and red at 90%. A tick in each bar
+marks how far through its window the clock is, which is where an even pace would put you:
+a bar that stops short of the tick is using less than that, one that runs past it more.
+When a window has reset since the last reading, it says `reset` until the next fetch.
+Those numbers exist nowhere on disk, so
 agent-farm fetches them the way Claude Code does: it reads the Claude Code sign-in from
 your Keychain (the item named `Claude Code-credentials`) and asks Anthropic's usage
 endpoint when you open the panel, then again as soon as a session or subagent has worked

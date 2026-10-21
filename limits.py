@@ -35,11 +35,14 @@ HTTP_TIMEOUT_S = 15
 KEYCHAIN_TIMEOUT_S = 120        # macOS may be showing the user an allow/deny dialog
 MIN_INTERVAL_S = 15             # a refresh sooner than this after a good one is skipped
 
-# Reply keys in display order with their panel labels. Per-model weeks are present only on
-# plans that have them; "extra" is pay-as-you-go spend when the account has it enabled.
-# Model-scoped weeks such as Fable come from the reply's "limits" list (see _scoped_windows).
-WINDOWS = (("five_hour", "session"), ("seven_day", "week"),
-           ("seven_day_opus", "week · opus"), ("seven_day_sonnet", "week · sonnet"))
+# Reply keys in display order with their panel labels and window lengths. Per-model weeks are
+# present only on plans that have them; "extra" is pay-as-you-go spend when the account has
+# it enabled, and has no clock. Model-scoped weeks such as Fable come from the reply's
+# "limits" list (see _scoped_windows). The reply gives only each window's reset time; the
+# lengths are the ones its keys name (five_hour, seven_day*), and scoped limits are weekly.
+SESSION_S, WEEK_S = 5 * 3600, 7 * 86400
+WINDOWS = (("five_hour", "session", SESSION_S), ("seven_day", "week", WEEK_S),
+           ("seven_day_opus", "week · opus", WEEK_S), ("seven_day_sonnet", "week · sonnet", WEEK_S))
 EXTRA_KEY, EXTRA_LABEL = "extra_usage", "extra"
 EXPIRED = "sign-in expired; open Claude Code to refresh it"
 
@@ -50,6 +53,17 @@ class Window:
     label: str
     used_pct: float                 # 0..100, as the API reports it
     resets_at: datetime | None      # timezone-aware, or None when the API gives none
+    span_s: float = 0.0             # window length in seconds; 0 = no clock (extra spend)
+
+    def elapsed(self, now: float) -> float | None:
+        """How far through its window the clock is, 0..1, taking the window to end at
+        resets_at. None without a clock, or once the window has reset since the reading."""
+        if not self.span_s or self.resets_at is None:
+            return None
+        left = self.resets_at.timestamp() - now
+        if left <= 0:
+            return None
+        return max(0.0, min(1.0, 1.0 - left / self.span_s))
 
 
 @dataclass(frozen=True)
@@ -182,18 +196,18 @@ def _scoped_windows(rows, taken: set[str]) -> list[Window]:
             continue
         taken.add(label)
         out.append(Window(f"scoped:{name}", label, max(0.0, min(100.0, float(pct))),
-                          _parse_ts(r.get("resets_at"))))
+                          _parse_ts(r.get("resets_at")), WEEK_S))
     return out
 
 
 def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
     wins: list[Window] = []
-    for key, label in WINDOWS:
+    for key, label, span in WINDOWS:
         w = data.get(key)
         if not isinstance(w, dict) or not isinstance(w.get("utilization"), (int, float)):
             continue
         pct = max(0.0, min(100.0, float(w["utilization"])))
-        wins.append(Window(key, label, pct, _parse_ts(w.get("resets_at"))))
+        wins.append(Window(key, label, pct, _parse_ts(w.get("resets_at")), span))
     wins.extend(_scoped_windows(data.get("limits"), {w.label for w in wins}))
     extra = data.get(EXTRA_KEY)
     if isinstance(extra, dict) and extra.get("is_enabled") and isinstance(extra.get("utilization"), (int, float)):
