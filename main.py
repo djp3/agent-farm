@@ -194,7 +194,9 @@ class AgentTree(Tree):
 
     def render_label(self, node: TreeNode, base_style: Style, style: Style) -> Text:
         label = node._label.copy()
-        label.stylize(style)
+        # The highlight's background and weight, never its text color: the selected row
+        # keeps the colors that say its state.
+        label.stylize(style.without_color + Style(bgcolor=style.bgcolor))
         if is_shell_key(node.data):
             icon, icon_style = self.ICON_SHELL, base_style
         elif node.allow_expand:
@@ -937,6 +939,10 @@ class AgentFarm(App):
     #left { width: 1fr; height: 1fr; }
     #fleet { height: 1; padding: 0 1; }
     #tree { width: 1fr; height: 1fr; border: none; padding: 0 1; scrollbar-size-horizontal: 0; }
+    /* The selected row keeps its colors (AgentTree.render_label), so the bar is a dark navy
+       they all read on, not Textual's bright blue with its own text color. */
+    #tree > .tree--cursor { background: #18283a; text-style: bold; }
+    #tree:focus > .tree--cursor { background: #1f3b5c; text-style: bold; }
     #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; }
     #usage.hidden { display: none; }
     #usage-body { height: 1fr; padding: 0 1; overflow-y: auto; }
