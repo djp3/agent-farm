@@ -121,3 +121,61 @@ def test_the_chart_scale_and_an_empty_day():
     assert main._activity_unit(2.2, 6) == 0.5 and main._activity_unit(0.3, 6) == 0.25
     assert main._activity_unit(7, 6) == 2 and main._activity_unit(100, 6) == 20
     assert "no agent has run" in main.activity_text(bins_of([0.0] * 24), 47).plain
+
+
+def launch(minutes: float, tid: str, background: bool = True) -> str:
+    """An assistant row issuing a Bash command, in the background or not."""
+    inp = {"command": "npm run deploy", "description": "Deploy"}
+    if background:
+        inp["run_in_background"] = True
+    msg = {"id": f"m{minutes}", "role": "assistant", "stop_reason": "tool_use",
+           "content": [{"type": "tool_use", "id": tid, "name": "Bash", "input": inp}],
+           "usage": {"output_tokens": 1, "input_tokens": 1}}
+    return json.dumps({"parentUuid": None, "type": "assistant", "message": msg, "uuid": "u",
+                       "timestamp": at(minutes), "sessionId": "S"}, separators=(",", ":"))
+
+
+def notice(minutes: float, tid: str, status: str = "completed", queued: bool = True) -> str:
+    """Claude Code's notice that a background task changed state: queued at once, and
+    delivered to the agent as a user row when it next takes input."""
+    body = (f"<task-notification><task-id>b1</task-id><tool-use-id>{tid}</tool-use-id>"
+            f"<output-file>/tmp/b1.output</output-file><status>{status}</status>"
+            f"<summary>done</summary></task-notification>")
+    if not queued:
+        return row("user", minutes, text=body)
+    return json.dumps({"type": "queue-operation", "operation": "enqueue", "timestamp": at(minutes),
+                       "sessionId": "S", "content": body}, separators=(",", ":"))
+
+
+def test_an_agent_waiting_on_a_background_command_is_at_work(tmp_path):
+    u = scan(tmp_path, [
+        row("user", 0), launch(1, "t1"), row("user", 1.1, text="running in background"),
+        row("assistant", 2, "end_turn"),                      # the turn ends with the command running
+        notice(40, "t1"), notice(40, "t1", queued=False),     # it finishes, and wakes the agent
+        row("assistant", 45, "end_turn"),
+    ])
+    assert abs(hour(u, 0) - 45 / 60) < 1e-9                   # 0:00-0:45, counted once, not 0:00-0:02 + 0:40-0:45
+
+
+def test_an_unfinished_command_runs_to_now_only_while_its_shell_does(tmp_path):
+    u = scan(tmp_path, [row("user", 120), launch(121, "t1"), row("assistant", 122, "end_turn")])
+    now = (TOP + timedelta(minutes=150)).timestamp()
+    started = (TOP + timedelta(minutes=121, seconds=2)).timestamp()
+    capped = (1 + ACTIVITY_GAP_S / 60) / 30                   # 2:00-2:11: a silence, capped
+    assert abs(u.activity(now=now, live_shells={"S": [started]})[-1][1] - 1.0) < 1e-9   # all of 2:00-2:30
+    assert abs(u.activity(now=now)[-1][1] - capped) < 1e-9
+    # another shell in the same session is some other command's, not this launch's
+    assert abs(u.activity(now=now, live_shells={"S": [started + 3600]})[-1][1] - capped) < 1e-9
+
+
+def test_progress_notices_from_a_monitor_are_not_an_end(tmp_path):
+    u = scan(tmp_path, [row("user", 0), launch(1, "t1"), row("assistant", 2, "end_turn"),
+                        notice(20, "t1", status="running"), notice(30, "t1", status="killed")])
+    assert abs(hour(u, 0) - 30 / 60) < 1e-9
+
+
+def test_a_command_moved_to_the_background_counts_once_it_reports(tmp_path):
+    u = scan(tmp_path, [row("user", 0), launch(1, "t1", background=False),
+                        row("user", 3, text="moved to the background"), row("assistant", 4, "end_turn"),
+                        notice(30, "t1")])
+    assert abs(hour(u, 0) - 30 / 60) < 1e-9

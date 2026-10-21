@@ -92,6 +92,10 @@ def is_busy(i: Instance) -> bool:
     return i.alive and i.status == "busy"
 
 
+def is_shell(i: Instance) -> bool:
+    return i.alive and i.status == "shell"
+
+
 def is_idle(i: Instance) -> bool:
     return i.alive and i.status == "idle"
 
@@ -107,10 +111,12 @@ def always(i: Instance) -> bool:
 # ---- the orderings ---------------------------------------------------------- #
 ATTENTION = Ordering(
     name="attention",
-    description="what needs me first: waiting → working on my latest input → recently idle → inactive",
+    description="what needs me first: waiting → working on my latest input → running a shell → "
+                "recently idle → inactive",
     tiers=(
         Tier("waiting", is_waiting, lambda i: oldest_first(i.status_since)),       # longest wait first
         Tier("working", is_busy, lambda i: newest_first(last_input_ts(i))),      # my latest input first
+        Tier("shell", is_shell, lambda i: newest_first(last_input_ts(i))),       # waiting on its command
         Tier("idle", is_idle, lambda i: newest_first(i.status_since)),           # most recently idle first
         Tier("inactive", is_inactive, lambda i: newest_first(i.started_at)),     # newest first
     ),

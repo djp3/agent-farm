@@ -5,8 +5,9 @@ what each one is doing, whether it is busy, idle or waiting for you, and the sub
 teammates working under it. Sessions in iTerm2 and in the Claude desktop app both appear.
 
 It is strictly read-only. Nothing is installed into Claude Code and no hooks are added;
-agent-farm only reads the files Claude Code already writes under `~/.claude` and asks
-iTerm2 which tab owns which session. The one optional exception is the plan-limits block
+agent-farm only reads the files Claude Code already writes under `~/.claude`, looks at the
+process list for the shells each session is running, and asks iTerm2 which tab owns which
+session. The one optional exception is the plan-limits block
 of the usage panel, off by default, which asks Anthropic for the same numbers `/usage`
 shows (see [The usage panel](#the-usage-panel)).
 
@@ -32,8 +33,9 @@ tab-focus key.
 
 From top to bottom:
 
-- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
-  Dock, Mission Control and the window switcher show whether the farm needs you.
+- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy, waiting or running
+  a shell, so the Dock, Mission Control and the window switcher show whether the farm is
+  at work or needs you.
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
 - **The tree**: one row per head session, ordered so that what needs you is at the top,
@@ -76,25 +78,30 @@ paints on its own Claude status dot, so the tab bar and agent-farm agree:
 |-------|--------------|----------|
 | orange | **waiting** for you (permission prompt, question, plan approval) | |
 | green | **busy** on your input | **running**; dimmed while **starting** |
+| teal | **shell**: otherwise idle while a command it started still runs | **shell**: finished or silent while a command it started still runs |
 | blue | **idle**, ready for your next instruction | dimmed: **dormant**, finished but resident |
 | grey | **inactive**: a stale registry entry or an unregistered process | dimmed: **archived**, log only |
 | magenta | | **stale**: silent too long mid tool-call, likely killed |
 | red | agent-farm could not read this session (see the log) | |
 
+Teal is agent-farm's own; Claude Code shows such a session as idle.
+
 After the glyph comes the session name, then the **agent strip** column: a cyan `⧉` first
 when the session runs inside the Claude desktop app, then one circle per subagent of the
-current run and one `✱` per five, in the same colors and ordered running → starting →
-stale → dormant.
-`●` is working, `○` finished and dormant, `◌` still starting, `◍` stale, so the strip reads
-without color. The strip column is as wide as the widest team on screen, and names are
+current run and one `✱` per five, in the same colors and ordered running → shell →
+starting → stale → dormant.
+`●` is working, `◉` waiting on a shell, `○` finished and dormant, `◌` still starting, `◍`
+stale, so the strip reads without color. A teammate's name is in the color Claude Code
+gives it. The strip column is as wide as the widest team on screen, and names are
 padded to a fixed column, so activity text lines up down the whole list.
 
-Last comes the activity text: what a waiting session is waiting for, the running tool, or
-the last message; a subagent with nothing to say yet shows its task.
+Last comes the activity text: what a waiting session is waiting for, the running tool, the
+shell it is waiting on (`shell 2m03s: Deploy the stack to dev`, in the agent's own words),
+or the last message; a subagent with nothing to say yet shows its task.
 
 ### The fleet line
 
-One `■` per head session, grouped and colored waiting → busy → idle → inactive, so the
+One `■` per head session, grouped and colored waiting → busy → shell → idle → inactive, so the
 count of each color is the count of sessions in that state, then the fleet-wide subagent
 tally in circles and asterisks. Two red notes appear only when something is wrong:
 `it2 missing` when iTerm2's command-line tool cannot be found (the `f` key needs it), and
@@ -105,9 +112,10 @@ tally in circles and asterisks. Two red notes appear only when something is wron
 For a head session: its state and how long it has been in it ("idle for 45s"), the working
 directory, the git repository and branch (with "worktree of …" for linked worktrees,
 including the ones `claude --worktree` makes), model and effort, start time, context size
-and logged cost, the session summary, your last prompt, the running tool, anything queued,
+and logged cost, the session summary, your last prompt, the running tool, the shells still
+running (how long each has run, what it is for and the command itself), anything queued,
 and the last message. Desktop-app sessions add a `where` line. For a subagent: its state,
-its task and its last message.
+its task, its shells and its last message.
 
 ### Ordering
 
@@ -115,8 +123,9 @@ The default ordering, **attention**, puts first what needs you:
 
 1. **waiting** for your response, longest wait first
 2. **busy** on your input, most recent prompt first
-3. **idle**, most recently gone idle first
-4. **inactive**
+3. **shell**, waiting on a command it started, most recent prompt first
+4. **idle**, most recently gone idle first
+5. **inactive**
 
 The alternatives, chosen in Settings, are **activity** (most recent transcript event first),
 **started** (launch order) and **name**. The cursor stays on the same session when rows move.
@@ -168,16 +177,23 @@ the last 24 hours, the current hour at the right. A stalk's height is how many a
 (sessions and subagents together) were running in that hour on average: three agents that
 each ran for half an hour make 1.5. An hour with a little work that rounds to nothing still
 shows a sprout. Beside it: agents running this hour so far, the busiest hour, the average
-across all 24 hours, and the day's total in agent-hours. Running time comes from the transcripts: an agent counts as running
-from each message or tool result until its turn ends or you interrupt it, and a silence
-counts for at most ten minutes, so a permission prompt left open overnight does not read as
-a night of work.
+across all 24 hours, and the day's total in agent-hours. Running time comes from the
+transcripts: an agent counts as running from each message or tool result until its turn
+ends or you interrupt it, and a silence counts for at most ten minutes, so a permission
+prompt left open overnight does not read as a night of work. An agent waiting on a
+background command counts as running until Claude Code reports the command finished; one
+still going counts up to now while its shell is running.
 
 ## What the states mean
 
 - **busy** and **idle** come straight from Claude Code's own session registry.
 - **waiting** is inferred from the transcript: a permission request without a result yet,
   or an open question or plan approval.
+- **shell** comes from the process list. Claude Code runs every command in a shell of its
+  own under the session's process, so an idle session (or a finished or silent subagent)
+  with such a shell still running is waiting on a background command, a monitor, or a
+  command moved to the background. The transcript says which agent issued the command and
+  what it is for.
 - Subagents are **running** while their transcript changed in the last 90 s, or ends mid
   tool-call and is under 15 min old; **dormant** once the head agent received their final
   message (they stay resident and can be messaged again); **stale** when they end mid
@@ -208,8 +224,8 @@ it again.
 Claude Code keeps a registry entry per running session in `~/.claude/sessions`, with its
 busy or idle state, and appends every turn to a transcript under `~/.claude/projects`;
 subagents get transcripts of their own next to their lead's. agent-farm tails those files
-once a second, asks iTerm2's `it2` tool which tab owns which terminal, and draws the
-result. The app is a Python program (Textual) running inside a native window; see
+once a second, looks at which shells each session's process is running, asks iTerm2's
+`it2` tool which tab owns which terminal, and draws the result. The app is a Python program (Textual) running inside a native window; see
 [DEVELOPMENT.md](DEVELOPMENT.md) to run it from source, build the app or cut a release.
 
 ## License
