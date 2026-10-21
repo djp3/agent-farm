@@ -32,8 +32,8 @@ from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Stati
                              Tree)
 from textual.widgets.tree import TreeNode
 
-from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, fmt_age, fmt_tokens,
-                       setup_logging)
+from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, Shell, fmt_age,
+                       fmt_tokens, setup_logging)
 from apppaths import app_version
 from limits import LimitsReport, PlanLimits
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
@@ -115,11 +115,13 @@ def model_split_text(split: list[tuple[str, int]], width: int) -> Text:
     return t
 
 # Status palette. The four head-session colors are the ones iTerm2 paints on its own
-# Claude status dot, so the tab bar and this monitor agree. Rows carry the color on
-# their triangle; the detail pane spells the state out.
+# Claude status dot, so the tab bar and this monitor agree; teal, between busy green and
+# idle blue, is agent-farm's own. Rows carry the color on their triangle; the detail pane
+# spells the state out.
 STATUS_STYLE = {
     "waiting": "bold #ff9500",        # needs you: permission prompt, question, plan approval
     "busy": "#00d75f",                # working on your input
+    "shell": "#00afaf",               # otherwise idle while a command it started runs
     "idle": "#5f87ff",                # finished, ready for your next instruction
     "dead": "#888888", "unknown": "#888888",       # inactive: stale registry entry / unregistered
     "running": "#00d75f",             # subagent working
@@ -164,15 +166,15 @@ class AgentTree(Tree):
 
 
 STRIP_MAX = 16                       # cap on the agent strip column (16 asterisks = 80 agents)
-STRIP_ORDER = ("running", "starting", "stale", "dormant")
-STRIP_CIRCLE = {"running": "●", "starting": "◌", "stale": "◍", "dormant": "○"}
+STRIP_ORDER = ("running", "shell", "starting", "stale", "dormant")
+STRIP_CIRCLE = {"running": "●", "shell": "◉", "starting": "◌", "stale": "◍", "dormant": "○"}
 STRIP_FIVE = "✱"                      # one asterisk tallies five agents of that state
 
 
 def agent_glyphs(agents: list[Agent]) -> list[tuple[str, str]]:
     """One circle per current-run subagent, one asterisk per five, colored by state and
-    ordered running → starting → stale → dormant. Filled means working, hollow means
-    finished, so it reads without color."""
+    ordered running → shell → starting → stale → dormant. Filled means working, ringed
+    means a shell, hollow means finished, so it reads without color."""
     counts = {st: 0 for st in STRIP_ORDER}
     for a in agents:
         if not a.archived and a.status in counts:
@@ -212,13 +214,13 @@ def agent_strip(glyphs: list[tuple[str, str]], width: int) -> Text:
 
 
 HEAD_GLYPH = "■"                      # one square per head session in the fleet line
-HEAD_ORDER = ("waiting", "busy", "idle", "dead", "unknown")
+HEAD_ORDER = ("waiting", "busy", "shell", "idle", "dead", "unknown")
 
 
 def fleet_line(instances: list[Instance], show_text: bool,
                error_count: int, it2_ok: bool) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
-    by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
+    by state (waiting → busy → shell → idle → inactive), the fleet-wide subagent tally in the same
     circles-and-asterisks system as the rows, then red notes only when it2 is missing or
     warnings were logged recently.
     With the status-text setting on, the counts are also spelled out."""
@@ -239,9 +241,11 @@ def fleet_line(instances: list[Instance], show_text: bool,
     if show_text:
         busy = sum(1 for i in live if i.status == "busy")
         waiting = sum(1 for i in live if i.status == "waiting")
+        shell = sum(1 for i in live if i.status == "shell")
         running = sum(1 for a in all_agents if a.status == "running")
         t.append("  ")
-        t.append(f"{len(live)} sessions · {busy} busy · {waiting} waiting · {running} agents running")
+        t.append(f"{len(live)} sessions · {busy} busy · {waiting} waiting · "
+                 + (f"{shell} in a shell · " if shell else "") + f"{running} agents running")
     if not it2_ok:
         t.append("  ")
         t.append("it2 missing — focus (f) unavailable", style=STATUS_STYLE["error"])
@@ -254,19 +258,21 @@ def fleet_line(instances: list[Instance], show_text: bool,
 def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool) -> str:
     """Everything the fleet line encodes, plus the active ordering, as words (on hover)."""
     live = [i for i in instances if i.alive]
-    counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "idle")}
+    counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "shell", "idle")}
     inactive = len(instances) - len(live) + sum(1 for i in live if i.status == "unknown")
     agents = [a for i in live for a in i.agents if not a.archived]
-    ag = {st: sum(1 for a in agents if a.status == st) for st in ("running", "starting", "stale", "dormant")}
+    ag = {st: sum(1 for a in agents if a.status == st) for st in STRIP_ORDER}
     archived = sum(1 for i in instances for a in i.agents if a.archived)
     lines = [
         f"{len(instances)} Claude session{'s' if len(instances) != 1 else ''}: "
-        f"{counts['waiting']} waiting for you, {counts['busy']} busy, {counts['idle']} idle, {inactive} inactive",
-        "  one ■ per session, colored orange / green / blue / grey in that order",
+        f"{counts['waiting']} waiting for you, {counts['busy']} busy, {counts['shell']} running a shell, "
+        f"{counts['idle']} idle, {inactive} inactive",
+        "  one ■ per session, colored orange / green / teal / blue / grey in that order",
         f"{len(agents)} current-run subagent{'s' if len(agents) != 1 else ''}: "
-        f"{ag['running']} running, {ag['starting']} starting, {ag['stale']} stale, {ag['dormant']} dormant"
+        f"{ag['running']} running, {ag['shell']} in a shell, {ag['starting']} starting, {ag['stale']} stale, "
+        f"{ag['dormant']} dormant"
         + (f"  (+{archived} archived, not shown)" if archived else ""),
-        "  ● running  ◌ starting  ◍ stale  ○ dormant · ✱ = five of a kind",
+        "  ● running  ◉ shell  ◌ starting  ◍ stale  ○ dormant · ✱ = five of a kind",
         f"ordering: {ordering.name} — {ordering.description}",
     ]
     if not it2_ok:
@@ -366,6 +372,25 @@ def _queued_summary(content: str) -> str:
     return f"message from another session ({src})" if src else "message from another session"
 
 
+def _shell_lines(out: Text, shells: list[Shell], now: float, agents: list[Agent] = ()) -> None:
+    """The detail pane's list of running shells: how long each has run, what it is for and,
+    when the transcript named it, the command itself."""
+    if not shells:
+        return
+    names = {a.agent_id: a.name for a in agents}
+    out.append("shells  (commands still running)\n", style="bold dim")
+    for s in shells:
+        command = s.command.strip().split("\n", 1)[0][:160]
+        out.append(f"{fmt_age(s.started, now):>7}  ", style="dim")
+        out.append(s.label or command, style=STATUS_STYLE["shell"])
+        if s.owner:
+            out.append(f"  ({names.get(s.owner, s.owner)})", style="dim")
+        out.append("\n")
+        if s.label:
+            out.append(f"         $ {command}\n", style="dim")
+    out.append("\n")
+
+
 def detail_text(obj, now: float) -> Text:
     out = Text()
 
@@ -423,6 +448,7 @@ def detail_text(obj, now: float) -> Text:
                 name, summ, ts = tr.current_tool
                 out.append(f"running tool  {fmt_age(ts, now)}\n", style="bold dim")
                 out.append(f"{name}: {summ}\n\n", style="green")
+            _shell_lines(out, i.shells, now, i.agents)
             # The queue lives in the process's memory, so anything queued before this
             # process started cannot still be waiting.
             queued = [q for q in tr.queued
@@ -471,6 +497,7 @@ def detail_text(obj, now: float) -> Text:
                 name, summ, ts = tr.current_tool
                 out.append(f"running tool  {fmt_age(ts, now)}\n", style="bold dim")
                 out.append(f"{name}: {summ}\n\n", style="green")
+            _shell_lines(out, a.shells, now)
             if tr.last_text:
                 out.append("last message\n", style="bold dim")
                 out.append(tr.last_text.strip()[:1500] + "\n")
@@ -1044,7 +1071,9 @@ class AgentFarm(App):
             return
         if usage.has_class("hidden") or not self.usage.scanned_once:
             return
-        farm.update(activity_text(self.usage.activity(), self._usage_text_width()))
+        # A background command whose shell is still running keeps its agent at work up to now.
+        live = {i.session_id: [s.started for s in i.shells] for i in self.instances if i.alive and i.shells}
+        farm.update(activity_text(self.usage.activity(live_shells=live), self._usage_text_width()))
 
     def action_toggle_usage(self) -> None:
         usage = self.query_one("#usage")

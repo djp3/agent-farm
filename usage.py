@@ -16,6 +16,8 @@ It also keeps, for the last day, when each session and subagent was running: fro
 user or assistant row to the next, unless the row ended the turn (stop reason end_turn,
 or the user interrupting), and never more than ACTIVITY_GAP_S past a row. That cap is
 what keeps a permission prompt left open overnight from counting as a night of work.
+A background command counts too, from its launch until Claude Code reports it finished,
+so an agent waiting on one is at work.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import glob
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -51,6 +54,13 @@ _USER_ROW, _ASSISTANT_ROW = b'"type":"user"', b'"type":"assistant"'
 _META_ROW = b'"isMeta":true'
 _TS_KEY = b'"timestamp":"'
 _INTERRUPTED = b"[Request interrupted by user"
+# When a background command ends, Claude Code queues a notice for the agent naming the tool
+# call that started it. Monitors also send notices while they run; those are not an end.
+_NOTICE = b"<task-notification>"
+_NOTICE_TOOL = re.compile(rb"<tool-use-id>([^<]+)</tool-use-id>")
+_NOTICE_STATUS = re.compile(rb"<status>([a-z_]+)</status>")
+RECENT_COMMANDS = 50                # foreground commands remembered, in case one is backgrounded
+LAUNCH_MATCH_S = 60                 # a shell starting this soon after a launch row is that launch's
 
 
 def _epoch(ts: Optional[str]) -> float:
@@ -109,7 +119,9 @@ class _FileState:
     session_id: str = ""
     act_last: float = 0.0            # time of the last user/assistant row
     act_ended: bool = True           # that row ended the turn (or there was none)
-    spans: list = field(default_factory=list)    # [start, end] running, merged, last day only
+    spans: list = field(default_factory=list)    # [start, end] running, sorted and merged, last day only
+    shells: dict = field(default_factory=dict)   # tool call id -> launch, background commands not done
+    commands: dict = field(default_factory=dict)  # tool call id -> issue, recent foreground commands
 
 
 class UsageScanner:
@@ -121,7 +133,8 @@ class UsageScanner:
         self._published: dict[str, DayUsage] = {}
         self._publish_lock = threading.Lock()
         self._files: dict[str, _FileState] = {}
-        self._published_activity: tuple[list[tuple[float, float]], list[float]] = ([], [])
+        # per transcript: (session id, running spans, open turn's last row or None, open shells' launches)
+        self._published_activity: list[tuple[str, list, Optional[float], list[float]]] = []
         self._horizon = 0.0                     # spans ending before this are not kept
         self._warned: dict[str, float] = {}
         self.last_scan_duration = 0.0
@@ -176,12 +189,15 @@ class UsageScanner:
         """Replace the readable snapshot with independent copies of the working tallies."""
         frozen = {date: replace(d, sessions=set(d.sessions), out_by_model=Counter(d.out_by_model))
                   for date, d in self.days.items()}
-        spans = [(a, b) for st in self._files.values() for a, b in st.spans if b > self._horizon]
-        open_since = [st.act_last for st in self._files.values()
-                      if not st.act_ended and st.act_last > self._horizon]
+        activity = []
+        for st in self._files.values():
+            spans = [(a, b) for a, b in st.spans if b > self._horizon]
+            tail = st.act_last if not st.act_ended and st.act_last > self._horizon else None
+            if spans or tail is not None or st.shells:
+                activity.append((st.session_id, spans, tail, list(st.shells.values())))
         with self._publish_lock:
             self._published = frozen
-            self._published_activity = (spans, open_since)
+            self._published_activity = activity
 
     def report(self, n_days: int = 14) -> list[DayUsage]:
         """The last n_days of local days, oldest first, zero-filled. Reads the snapshot
@@ -195,16 +211,29 @@ class UsageScanner:
             out.append(published.get(d) or DayUsage(date=d))
         return out
 
-    def activity(self, now: Optional[float] = None, hours: int = ACTIVITY_H) -> list[tuple[float, float]]:
+    def activity(self, now: Optional[float] = None, hours: int = ACTIVITY_H,
+                 live_shells: Optional[dict[str, list[float]]] = None) -> list[tuple[float, float]]:
         """Agents at work per local clock hour, oldest first and the current hour last, as
         (hour start, agents). Agents is the running time of every session and subagent in
         that hour over the hour's length, so three agents running half an hour each is 1.5.
-        The current hour is measured over the part of it that has passed."""
+        The current hour is measured over the part of it that has passed.
+        A background command not reported finished runs up to now when `live_shells` (session
+        id -> start times of the shells running in it right now) has its shell; otherwise it
+        is a silence, capped like any other, since its session may have been closed under it."""
         now = time.time() if now is None else now
+        live_shells = live_shells or {}
+
+        def running(sid: str, launch: float) -> bool:
+            return any(launch - 5 <= s <= launch + LAUNCH_MATCH_S for s in live_shells.get(sid, ()))
+
         with self._publish_lock:
-            spans, open_since = self._published_activity
-        # a row with no turn end after it is still running, up to the cap
-        spans = spans + [(t, min(now, t + ACTIVITY_GAP_S)) for t in open_since]
+            published = self._published_activity
+        spans: list[tuple[float, float]] = []
+        for sid, done, tail, shells in published:
+            # a row with no turn end after it is still running, up to the cap
+            more = [(tail, min(now, tail + ACTIVITY_GAP_S))] if tail is not None else []
+            more += [(t, now if running(sid, t) else min(now, t + ACTIVITY_GAP_S)) for t in shells]
+            spans += _merged(done + more) if more else done      # one agent counts once at a time
         top = datetime.fromtimestamp(now).replace(minute=0, second=0, microsecond=0).timestamp()
         starts = [top - 3600 * (hours - 1 - k) for k in range(hours)]
         out = []
@@ -226,6 +255,40 @@ class UsageScanner:
         if d is None:
             d = self.days[date] = DayUsage(date=date)
         return d
+
+    def _add_span(self, st: _FileState, a: float, b: float) -> None:
+        """Add [a, b] to a file's running spans. A background command's span starts back at
+        its launch, so unlike a turn's it can cover spans already recorded."""
+        if b > a and b > self._horizon:
+            st.spans = [list(s) for s in _merged(st.spans + [(a, b)])]
+
+    def _launches(self, st: _FileState, msg: dict, ts: float) -> None:
+        """Commands issued in an assistant row: background ones are running until their
+        notice, foreground ones are remembered briefly in case they are moved to the
+        background (their notice then names them too)."""
+        content = msg.get("content")
+        for c in content if isinstance(content, list) else ():
+            inp = c.get("input") if isinstance(c, dict) and c.get("type") == "tool_use" else None
+            if not isinstance(inp, dict) or not isinstance(inp.get("command"), str) or not c.get("id"):
+                continue
+            if inp.get("run_in_background") is True:
+                st.shells[c["id"]] = ts
+            else:
+                st.commands[c["id"]] = ts
+                if len(st.commands) > RECENT_COMMANDS:
+                    del st.commands[next(iter(st.commands))]
+
+    def _notices(self, st: _FileState, raw: bytes) -> None:
+        """A row carrying task notices: each finished command ran from its launch to here."""
+        at = _row_epoch(raw)
+        for notice in raw.split(_NOTICE)[1:]:
+            tool, status = _NOTICE_TOOL.search(notice), _NOTICE_STATUS.search(notice)
+            if not tool or not at or (status and status.group(1) == b"running"):
+                continue
+            tid = tool.group(1).decode("ascii", "replace")
+            start = st.shells.pop(tid, None) or st.commands.pop(tid, None)
+            if start:
+                self._add_span(st, start, at)
 
     def _activity(self, st: _FileState, ts: float, ends: bool) -> None:
         """A user or assistant row at `ts`. The agent ran from the previous row up to this
@@ -276,6 +339,8 @@ class UsageScanner:
             st = self._files[path] = _FileState()
         changed = False
         for raw in self._new_lines(path, st):
+            if _NOTICE in raw and (st.shells or st.commands):
+                self._notices(st, raw)               # queued at the end, and again when delivered
             if _USER_ROW in raw and _ASSISTANT_ROW not in raw:
                 if _META_ROW not in raw:             # meta rows are local, not the model working
                     self._activity(st, _row_epoch(raw), ends=_INTERRUPTED in raw)
@@ -298,6 +363,7 @@ class UsageScanner:
                 msg = row.get("message") or {}
                 if isinstance(msg, dict):              # every block row, before the dedupe below
                     self._activity(st, _epoch(row.get("timestamp")), msg.get("stop_reason") in ENDS_TURN)
+                    self._launches(st, msg, _epoch(row.get("timestamp")))
                 usage = msg.get("usage") if isinstance(msg, dict) else None
                 if not isinstance(usage, dict):
                     continue
@@ -334,6 +400,16 @@ class UsageScanner:
                     changed = True
         return changed
 
+
+def _merged(spans: list) -> list[tuple[float, float]]:
+    """Overlapping or touching [start, end] spans joined, sorted by start."""
+    out: list[list[float]] = []
+    for a, b in sorted((a, b) for a, b in spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
 
 
 def fmt_count(n: float) -> str:

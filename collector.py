@@ -6,7 +6,8 @@ Everything here is read-only. Claude Code already writes:
   ~/.claude/projects/<slug>/<sessionId>.jsonl        transcript
   ~/.claude/projects/<slug>/<sessionId>/subagents/   one .jsonl + .meta.json per subagent
   ~/.claude/teams/session-<id8>/config.json          team membership (lead + teammates)
-iTerm2 ships `it2`, whose `session list --json` maps a tty to a tab.
+iTerm2 ships `it2`, whose `session list --json` maps a tty to a tab, and the process table
+shows the shells Claude Code is running commands in, as children of the session's process.
 
 No hooks are installed and nothing is sent to the instances.
 """
@@ -202,6 +203,14 @@ SUBAGENT_RUNNING_GRACE_S = 90
 # A subagent whose transcript ends mid tool-call but has been silent this long is 'stale'.
 SUBAGENT_STALE_S = 15 * 60
 _TEAMMATE_RE = re.compile(r'<teammate-message[^>]*\bteammate_id="([^"]+)"')
+# Claude Code runs every command it is asked for (Bash tool, monitors) as a child of its own
+# process: `<shell> -c "source …/shell-snapshots/snapshot-… && … eval '<command>' …"`. The
+# snapshot path tells those shells from the MCP servers and helpers it also starts.
+SHELL_MARK = "/shell-snapshots/snapshot-"
+_EVAL_RE = re.compile(r"\beval '((?:[^']|'\"'\"')*)'")
+COMMANDS_KEPT = 200        # recent commands per transcript, to name the shells running them
+# A command issued this long after its shell started is a later run of the same command.
+SHELL_ISSUE_SLACK_S = 10
 # On first open, only read this much from the end of a large transcript.
 FIRST_READ_TAIL_BYTES = 3 * 1024 * 1024
 
@@ -279,6 +288,7 @@ class TranscriptState:
     queued: list = field(default_factory=list)          # [{"content", "ts"}] prompts typed while busy
     spawns: dict = field(default_factory=dict)          # agent_id -> {name, description, ts}
     finished_agents: dict = field(default_factory=dict) # teammate name -> when its last reply arrived
+    commands: dict = field(default_factory=dict)        # command -> (summary, ts), latest issue last
     bad_rows: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -471,6 +481,12 @@ class TranscriptState:
                 inp = c.get("input") or {}
                 self.pending_tools[c.get("id")] = (clean_text(name), clean_text(_tool_summary(name, inp)), ts)
                 self.last_row_kind = "tool_use"
+                cmd = inp.get("command") if isinstance(inp, dict) else None
+                if isinstance(cmd, str) and cmd:
+                    self.commands.pop(cmd, None)
+                    self.commands[cmd] = (clean_text(_tool_summary(name, inp)), ts)
+                    if len(self.commands) > COMMANDS_KEPT:
+                        del self.commands[next(iter(self.commands))]
                 if name in ("Agent", "Task") and isinstance(inp, dict):
                     nm = clean_text(inp.get("name"))
                     if nm:
@@ -504,6 +520,31 @@ def tail_for(path: Path) -> TranscriptState:
 # Data model
 # --------------------------------------------------------------------------- #
 @dataclass
+class Shell:
+    """A command Claude Code is running in a shell of its own: a background command, a
+    monitor, or a foreground command still in progress."""
+    pid: int
+    started: float
+    command: str                     # as the shell was given it
+    label: str = ""                  # the model's description of it, from the transcript
+    owner: str = ""                  # agent_id of the subagent that issued it; "" for the head
+
+
+def _shell_command(script: str) -> str:
+    """The command inside Claude Code's wrapper, with the shell's quoting of single quotes
+    undone; the whole script if the wrapper ever changes shape."""
+    m = _EVAL_RE.search(script or "")
+    return clean_text(m.group(1).replace("'\"'\"'", "'") if m else script)
+
+
+def shell_activity(shells: list[Shell]) -> str:
+    """'shell 2m03s: Deploy the stack to dev', for the one running longest."""
+    s = min(shells, key=lambda s: s.started)
+    more = f"  (+{len(shells) - 1} more)" if len(shells) > 1 else ""
+    return f"shell {fmt_age(s.started)}: {s.label or _first_line(s.command, 120)}{more}"
+
+
+@dataclass
 class Agent:
     """A subagent / teammate under a head session."""
     agent_id: str
@@ -512,14 +553,17 @@ class Agent:
     description: str = ""
     model: str = ""
     color: str = ""
-    status: str = "unknown"          # running | dormant | stale | starting | archived
+    status: str = "unknown"          # running | shell | dormant | stale | starting | archived
     archived: bool = False           # from an earlier run of this session: a log, not a live teammate
     transcript: Optional[TranscriptState] = None
     started_ts: Optional[float] = None
     last_activity: Optional[float] = None
+    shells: list[Shell] = field(default_factory=list)   # the commands it issued that are still running
 
     @property
     def activity(self) -> str:
+        if self.status == "shell":
+            return shell_activity(self.shells)
         t = self.transcript
         if not t:
             return self.description
@@ -545,7 +589,7 @@ class Instance:
     kind: str = ""
     entrypoint: str = ""             # "cli" for a terminal, "claude-desktop" for the Claude app
     started_at: Optional[float] = None
-    status: str = "unknown"          # busy | idle | waiting | dead | unknown
+    status: str = "unknown"          # busy | idle | shell | waiting | dead | unknown
     status_detail: str = ""
     status_since: Optional[float] = None
     alive: bool = True
@@ -555,6 +599,11 @@ class Instance:
     transcript: Optional[TranscriptState] = None
     agents: list[Agent] = field(default_factory=list)
     git: dict = field(default_factory=dict)      # from git_info(cwd); {} when not a repository
+    shells: list[Shell] = field(default_factory=list)   # every shell under the process, subagents' too
+
+    @property
+    def own_shells(self) -> list[Shell]:
+        return [s for s in self.shells if not s.owner]
 
     @property
     def is_app(self) -> bool:
@@ -572,6 +621,8 @@ class Instance:
 
     @property
     def activity(self) -> str:
+        if self.status == "shell":                   # from the process table, transcript or not
+            return shell_activity(self.own_shells)
         t = self.transcript
         if not t:
             return ""
@@ -908,13 +959,16 @@ class Collector:
             instances[pid] = inst
 
         # Claude processes not in the registry (older builds, odd entrypoints).
-        for inst in self._unregistered(set(instances)):
+        procs = self._process_table()
+        for inst in self._unregistered(set(instances), procs):
             instances[inst.pid] = inst
 
-        ttys = self._ttys_for([i.pid for i in instances.values() if i.alive])
+        live = [i.pid for i in instances.values() if i.alive]
+        ttys = self._ttys_for(live)
+        shells = self._shells_under(procs, set(live))
         for inst in instances.values():
             try:
-                self._fill_instance(inst, ttys, now)
+                self._fill_instance(inst, ttys, shells.get(inst.pid, []), now)
             except Exception as e:               # one broken instance must not blank the others
                 inst.status_detail = "collector error (see the log)"
                 if _debounce.ok(("instance", inst.pid)):
@@ -931,17 +985,29 @@ class Collector:
         return self.iterm.focus(inst.iterm_session, label)
 
     @staticmethod
-    def _unregistered(known: set[int]) -> list[Instance]:
+    def _process_table() -> list:
+        """Every process with its pid, parent and name, read once per tick for the two
+        lookups below. A failure costs only what they add, never the registered sessions."""
+        if psutil is None:
+            return []
+        try:
+            return list(psutil.process_iter(["pid", "ppid", "name"]))
+        except Exception as e:
+            if _debounce.ok("psutil-scan"):
+                log.warning("process scan failed: %r", e)
+            return []
+
+    @staticmethod
+    def _unregistered(known: set[int], procs: Optional[list] = None) -> list[Instance]:
         """`claude` processes with no registry entry. Only the name is read for every
         process; command line and cwd are read per claude process, each under its own
         guard, because macOS refuses the command line of some system processes with a
-        plain PermissionError that psutil does not translate. A failure here costs at
-        most this supplement, never the registered sessions."""
-        if psutil is None:
-            return []
+        plain PermissionError that psutil does not translate."""
+        if procs is None:
+            procs = Collector._process_table()
         found: list[Instance] = []
         try:
-            for p in psutil.process_iter(["pid", "name"]):
+            for p in procs:
                 if p.info["name"] != "claude" or p.info["pid"] in known:
                     continue
                 try:
@@ -958,7 +1024,51 @@ class Collector:
                 log.warning("process scan failed: %r", e)
         return found
 
-    def _fill_instance(self, inst: Instance, ttys: dict[int, str], now: float) -> None:
+    @staticmethod
+    def _shells_under(procs: list, heads: set[int]) -> dict[int, list[Shell]]:
+        """The command shells each head process is running, by its pid. Only children of a
+        live head are looked at; only their argv and start time are read, never logged."""
+        found: dict[int, list[Shell]] = {}
+        for p in procs:
+            info = getattr(p, "info", None) or {}
+            parent = info.get("ppid")
+            if parent not in heads:
+                continue
+            try:
+                argv = p.cmdline() or []
+                if not any(SHELL_MARK in a for a in argv):
+                    continue
+                shell = Shell(pid=info["pid"], started=p.create_time(), command=_shell_command(argv[-1]))
+            except Exception:                    # gone or unreadable: it will show next tick
+                continue
+            found.setdefault(parent, []).append(shell)
+        return found
+
+    @staticmethod
+    def _attribute_shells(inst: Instance, shells: list[Shell]) -> None:
+        """Name each shell from the transcript that issued its command and give it to that
+        agent: the head, or the subagent whose command it is (the latest issue before the
+        shell started, when several ran the same command). An agent with nothing else going
+        on while one of its shells runs is waiting on it: the 'shell' state."""
+        sources = [("", inst.transcript)] + [(a.agent_id, a.transcript) for a in inst.agents if not a.archived]
+        for s in shells:
+            best = None
+            for owner, tr in sources:
+                hit = tr.commands.get(s.command) if tr else None
+                ts = (hit[1] or 0.0) if hit else 0.0
+                if hit and ts <= s.started + SHELL_ISSUE_SLACK_S and (best is None or ts > best[2]):
+                    best = (owner, hit[0], ts)
+            if best:
+                s.owner, s.label = best[0], best[1]
+        inst.shells = sorted(shells, key=lambda s: s.started)
+        for a in inst.agents:
+            a.shells = [s for s in inst.shells if s.owner == a.agent_id]
+            if a.shells and a.status in ("dormant", "stale"):
+                a.status = "shell"
+        if inst.status == "idle" and inst.own_shells:
+            inst.status, inst.status_detail = "shell", "otherwise idle; a command it started is still running"
+
+    def _fill_instance(self, inst: Instance, ttys: dict[int, str], shells: list[Shell], now: float) -> None:
         if inst.alive:
             inst.tty = ttys.get(inst.pid, "")
             it = self.iterm.lookup(inst.tty)
@@ -975,6 +1085,7 @@ class Collector:
             inst.git = git_info(inst.cwd)
         self._refine_status(inst)
         inst.agents = self._agents_for(inst, tpath)
+        self._attribute_shells(inst, shells)
 
     @staticmethod
     def _refine_status(inst: Instance) -> None:
@@ -1021,7 +1132,7 @@ def fmt_tokens(n: int) -> str:
 
 
 STATUS_GLYPH = {
-    "busy": "●", "idle": "○", "waiting": "◐", "dead": "✕", "unknown": "?",
+    "busy": "●", "idle": "○", "shell": "◉", "waiting": "◐", "dead": "✕", "unknown": "?",
     "running": "●", "dormant": "✓", "archived": "▫", "starting": "◌", "stale": "◍",
 }
 
