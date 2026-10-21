@@ -12,7 +12,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 |------|------|
 | `main.py` | the Textual app: tree, detail pane, fleet line, usage panel, settings screen |
 | `collector.py` | the passive data layer: registry, transcripts, subagents, git, `it2`; `python collector.py` prints a one-shot dump |
-| `usage.py` | incremental transcript scanner behind the usage panel |
+| `usage.py` | incremental transcript scanner behind the usage panel: daily tokens and cost, and when each agent was running over the last day |
 | `limits.py` | plan limits (the `/usage` windows) from Anthropic's OAuth usage endpoint, with the Claude Code sign-in from the Keychain; opt-in, via system `curl` |
 | `ordering.py` | the orderings; an `Ordering` is a tuple of `Tier`s, each with a `match` predicate and a sort `key`; add one and append it to `ORDERINGS` |
 | `settings.py` | persisted settings; a new setting is a dataclass field with a default |
