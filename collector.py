@@ -202,6 +202,8 @@ def git_info(cwd: str) -> dict:
 SUBAGENT_RUNNING_GRACE_S = 90
 # A subagent whose transcript ends mid tool-call but has been silent this long is 'stale'.
 SUBAGENT_STALE_S = 15 * 60
+# A stale subagent silent this long is not coming back: it moves to the archive, a log.
+STALE_ARCHIVE_S = 24 * 3600
 _TEAMMATE_RE = re.compile(r'<teammate-message[^>]*\bteammate_id="([^"]+)"')
 # Claude Code runs every command it is asked for (Bash tool, monitors) as a child of its own
 # process: `<shell> -c "source …/shell-snapshots/snapshot-… && … eval '<command>' …"`. The
@@ -550,6 +552,7 @@ class Agent:
     color: str = ""
     status: str = "unknown"          # running | shell | dormant | stale | starting | archived
     archived: bool = False           # from an earlier run of this session: a log, not a live teammate
+    stopped: bool = False            # archived because it stopped mid-task a day ago, in this run
     transcript: Optional[TranscriptState] = None
     started_ts: Optional[float] = None
     last_activity: Optional[float] = None
@@ -880,8 +883,10 @@ class Collector:
                         a.status = "running"
                     elif mid_work and age < SUBAGENT_STALE_S:
                         a.status = "running"     # a long tool call can be silent for minutes
-                    elif mid_work:
+                    elif mid_work and age < STALE_ARCHIVE_S:
                         a.status = "stale"       # silent too long mid tool-call: killed or crashed?
+                    elif mid_work:
+                        a.status, a.archived, a.stopped = "archived", True, True
                     else:
                         a.status = "dormant"
                 agents.append(a)
@@ -1042,7 +1047,8 @@ class Collector:
         shell started, when several ran the same command). An agent with nothing else going
         on while one of its shells runs is waiting on it: the 'shell' state. A shell whose
         subagent has stopped mid-task (stale) will never be read: it is stale too."""
-        sources = [("", inst.transcript)] + [(a.agent_id, a.transcript) for a in inst.agents if not a.archived]
+        sources = [("", inst.transcript)] + [(a.agent_id, a.transcript) for a in inst.agents
+                                             if not a.archived or a.stopped]     # this run's agents
         for s in shells:
             best = None
             for owner, tr in sources:
@@ -1058,7 +1064,7 @@ class Collector:
         for a in inst.agents:
             a.shells = [s for s in inst.shells if s.owner == a.agent_id]
             for s in a.shells:
-                s.owner_name, s.stale = a.name, a.status == "stale"
+                s.owner_name, s.stale = a.name, a.status in ("stale", "archived")
             if a.shells and a.status == "dormant":
                 a.status = "shell"
         if inst.status == "idle" and inst.own_shells:

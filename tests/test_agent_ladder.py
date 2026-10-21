@@ -61,3 +61,13 @@ def test_older_than_the_head_process_is_archived(tmp_path):
 
 def test_dead_head_archives_everything(tmp_path):
     assert _status(tmp_path, "text", age_s=10, alive=False) == "archived"
+
+
+def test_stale_for_a_day_moves_to_the_archive(tmp_path):
+    now = time.time()
+    head = _agent_dir(tmp_path, "tool_use", now - collector.STALE_ARCHIVE_S - 60)
+    inst = Instance(pid=1, session_id="sess", alive=True, started_at=now - 3 * 86400)   # this run
+    inst.transcript = collector.tail_for(head)
+    [a] = Collector()._agents_for(inst, head)
+    assert a.status == "archived" and a.archived and a.stopped
+    assert "stopped mid-task over a day ago" in __import__("main").detail_text(a, now).plain
