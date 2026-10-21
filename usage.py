@@ -11,6 +11,11 @@ buckets per local day:
 Claude Code writes one transcript row per content block of an API message, each
 carrying the *same* usage object, so usage is counted once per message id.
 No prices are hard-coded here: cost comes only from Claude Code's cost-state rows.
+
+It also keeps, for the last day, when each session and subagent was running: from one
+user or assistant row to the next, unless the row ended the turn (stop reason end_turn,
+or the user interrupting), and never more than ACTIVITY_GAP_S past a row. That cap is
+what keeps a permission prompt left open overnight from counting as a night of work.
 """
 from __future__ import annotations
 
@@ -35,6 +40,37 @@ WARN_EVERY_S = 900                  # per-file read failures are logged at most 
 log = logging.getLogger("agent_farm.usage")
 
 _NEEDLES = (b'"usage"', b'"cost-state"')
+
+ACTIVITY_H = 24                     # the agents-at-work chart covers this many clock hours
+ACTIVITY_GAP_S = 600                # longest silence after a row still counted as running
+                                    # (the Bash tool's own ceiling for a foreground command)
+ENDS_TURN = frozenset({"end_turn", "stop_sequence", "refusal"})
+# User rows are only timed, never parsed: a tool result can be megabytes. Inside string
+# values JSON escapes quotes, so these byte patterns match the row's own structure.
+_USER_ROW, _ASSISTANT_ROW = b'"type":"user"', b'"type":"assistant"'
+_META_ROW = b'"isMeta":true'
+_TS_KEY = b'"timestamp":"'
+_INTERRUPTED = b"[Request interrupted by user"
+
+
+def _epoch(ts: Optional[str]) -> float:
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _row_epoch(raw: bytes) -> float:
+    """The row's own timestamp without parsing the row. It is the first one: the message
+    comes before it and toolUseResult, which can hold timestamps of its own, after."""
+    i = raw.find(_TS_KEY)
+    if i < 0:
+        return 0.0
+    i += len(_TS_KEY)
+    j = raw.find(b'"', i, i + 40)
+    return _epoch(raw[i:j].decode("ascii", "replace")) if j > 0 else 0.0
 
 
 def _local_day(ts: Optional[str]) -> Optional[str]:
@@ -71,6 +107,9 @@ class _FileState:
     last_ts: str = ""
     last_cost: float = 0.0           # last cost-state total seen, for deltas
     session_id: str = ""
+    act_last: float = 0.0            # time of the last user/assistant row
+    act_ended: bool = True           # that row ended the turn (or there was none)
+    spans: list = field(default_factory=list)    # [start, end] running, merged, last day only
 
 
 class UsageScanner:
@@ -82,6 +121,8 @@ class UsageScanner:
         self._published: dict[str, DayUsage] = {}
         self._publish_lock = threading.Lock()
         self._files: dict[str, _FileState] = {}
+        self._published_activity: tuple[list[tuple[float, float]], list[float]] = ([], [])
+        self._horizon = 0.0                     # spans ending before this are not kept
         self._warned: dict[str, float] = {}
         self.last_scan_duration = 0.0
         self.scanned_once = False
@@ -101,6 +142,7 @@ class UsageScanner:
 
     def _scan_locked(self) -> bool:
         t0 = time.time()
+        self._horizon = t0 - (ACTIVITY_H + 1) * 3600
         changed = False
         paths = glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")) + \
             glob.glob(str(PROJECTS_DIR / "*" / "*" / "subagents" / "*.jsonl"))
@@ -134,8 +176,12 @@ class UsageScanner:
         """Replace the readable snapshot with independent copies of the working tallies."""
         frozen = {date: replace(d, sessions=set(d.sessions), out_by_model=Counter(d.out_by_model))
                   for date, d in self.days.items()}
+        spans = [(a, b) for st in self._files.values() for a, b in st.spans if b > self._horizon]
+        open_since = [st.act_last for st in self._files.values()
+                      if not st.act_ended and st.act_last > self._horizon]
         with self._publish_lock:
             self._published = frozen
+            self._published_activity = (spans, open_since)
 
     def report(self, n_days: int = 14) -> list[DayUsage]:
         """The last n_days of local days, oldest first, zero-filled. Reads the snapshot
@@ -147,6 +193,25 @@ class UsageScanner:
         for i in range(n_days - 1, -1, -1):
             d = (today.fromordinal(today.toordinal() - i)).strftime("%Y-%m-%d")
             out.append(published.get(d) or DayUsage(date=d))
+        return out
+
+    def activity(self, now: Optional[float] = None, hours: int = ACTIVITY_H) -> list[tuple[float, float]]:
+        """Agents at work per local clock hour, oldest first and the current hour last, as
+        (hour start, agents). Agents is the running time of every session and subagent in
+        that hour over the hour's length, so three agents running half an hour each is 1.5.
+        The current hour is measured over the part of it that has passed."""
+        now = time.time() if now is None else now
+        with self._publish_lock:
+            spans, open_since = self._published_activity
+        # a row with no turn end after it is still running, up to the cap
+        spans = spans + [(t, min(now, t + ACTIVITY_GAP_S)) for t in open_since]
+        top = datetime.fromtimestamp(now).replace(minute=0, second=0, microsecond=0).timestamp()
+        starts = [top - 3600 * (hours - 1 - k) for k in range(hours)]
+        out = []
+        for k, a in enumerate(starts):
+            b = starts[k + 1] if k + 1 < hours else now
+            busy = sum(max(0.0, min(b, e) - max(a, s)) for s, e in spans)
+            out.append((a, busy / (b - a) if b > a else 0.0))
         return out
 
     def model_split(self, n_days: int = 14) -> list[tuple[str, int]]:
@@ -161,6 +226,21 @@ class UsageScanner:
         if d is None:
             d = self.days[date] = DayUsage(date=date)
         return d
+
+    def _activity(self, st: _FileState, ts: float, ends: bool) -> None:
+        """A user or assistant row at `ts`. The agent ran from the previous row up to this
+        one (at most ACTIVITY_GAP_S) unless that row ended its turn."""
+        if not ts:
+            return
+        if not st.act_ended and ts > st.act_last:
+            a, b = st.act_last, min(ts, st.act_last + ACTIVITY_GAP_S)
+            if b > self._horizon:
+                if st.spans and a <= st.spans[-1][1]:
+                    st.spans[-1][1] = max(st.spans[-1][1], b)
+                else:
+                    st.spans.append([a, b])
+        if ts >= st.act_last:
+            st.act_last, st.act_ended = ts, ends
 
     def _new_lines(self, path: str, st: _FileState):
         """Yield the complete lines appended since the last call, reading CHUNK_BYTES at a
@@ -196,6 +276,10 @@ class UsageScanner:
             st = self._files[path] = _FileState()
         changed = False
         for raw in self._new_lines(path, st):
+            if _USER_ROW in raw and _ASSISTANT_ROW not in raw:
+                if _META_ROW not in raw:             # meta rows are local, not the model working
+                    self._activity(st, _row_epoch(raw), ends=_INTERRUPTED in raw)
+                continue
             if not any(n in raw for n in _NEEDLES):
                 continue
             try:
@@ -212,6 +296,8 @@ class UsageScanner:
                 st.session_id = row["sessionId"]
             if t == "assistant":
                 msg = row.get("message") or {}
+                if isinstance(msg, dict):              # every block row, before the dedupe below
+                    self._activity(st, _epoch(row.get("timestamp")), msg.get("stop_reason") in ENDS_TURN)
                 usage = msg.get("usage") if isinstance(msg, dict) else None
                 if not isinstance(usage, dict):
                     continue

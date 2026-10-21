@@ -578,6 +578,81 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     return t
 
 
+# The agents-at-work chart: one wheat stalk per clock hour, its height the number of agents
+# running in that hour. The stem and the box-drawing sprout are drawn by the terminal itself
+# (SwiftTerm draws U+2500-257F), and SF Mono has the grain head.
+ACTIVITY_ROWS = 6
+FARM_REDRAW_S = 60.0    # the chart moves with the clock, so it redraws on its own too
+STALK, SPROUT, GRAIN = "┃", "╻", "Ψ"
+STALK_HUE, GRAIN_HUE = "#5faf5f", "#e5b45a"        # green stem, ripe grain
+
+
+def _activity_unit(peak: float, rows: int) -> float:
+    """Agents per row: the finest step that fits the peak, so 1.5 agents is three rows."""
+    for u in (0.25, 0.5, 1, 2, 5, 10, 20, 50, 100):
+        if peak <= u * rows:
+            return u
+    return peak / rows
+
+
+def _hour_label(ts: float) -> str:
+    h = datetime.fromtimestamp(ts).hour
+    return f"{h % 12 or 12}{'a' if h < 12 else 'p'}"
+
+
+def activity_text(bins: list[tuple[float, float]], width: int) -> Text:
+    """Agents at work over the last day: a stalk per hour, oldest at the left and the current
+    hour at the right, its height the agents running in that hour (sessions and subagents,
+    so three agents running half an hour each make 1.5). An hour with some work that rounds
+    to no rows still shows a sprout. The figures to the right say what the stalks show."""
+    t = Text()
+    t.append(f"agents at work · last {len(bins)} hours\n", style="dim")
+    vals = [v for _, v in bins]
+    peak = max(vals, default=0.0)
+    if peak <= 0:
+        t.append("no agent has run in the last day\n" if bins else "", style="dim")
+        return t
+    unit = _activity_unit(peak, ACTIVITY_ROWS)
+    heights = [round(v / unit) for v in vals]
+    whole = [r for r in range(1, ACTIVITY_ROWS + 1) if (r * unit) % 1 == 0]
+    step = max(1, -(-len(whole) // 3))                     # at most three labels
+    labels = {r: f"{r * unit:g}" for r in whole[::-1][::step]}
+    gut = max((len(x) for x in labels.values()), default=1)
+    peak_at = bins[vals.index(peak)][0]
+    hours_total = sum(v * ((bins[k + 1][0] if k + 1 < len(bins) else time.time()) - a) / 3600
+                      for k, (a, v) in enumerate(bins))
+    side = [("now", f"{vals[-1]:.1f}"), ("peak", f"{peak:.1f} at {_hour_label(peak_at)}"),
+            ("day", f"{hours_total:.1f} agent-h")]
+    side_w = max(len(k) for k, _ in side)
+    for r in range(ACTIVITY_ROWS, 0, -1):
+        lab = labels.get(r, "")
+        t.append(f"{lab:>{gut}}{'┤' if lab else '│'}", style="dim")
+        for v, h in zip(vals, heights):
+            if h > r:
+                t.append(STALK, style=STALK_HUE)
+            elif h == r:
+                t.append(GRAIN, style=GRAIN_HUE)
+            elif r == 1 and h == 0 and v > 0:
+                t.append(SPROUT, style=STALK_HUE)
+            else:
+                t.append(" ")
+        i = ACTIVITY_ROWS - r
+        if i < len(side) and gut + 1 + len(bins) + 3 + side_w + 1 + len(side[i][1]) <= width:
+            k, val = side[i]
+            t.append(f"   {k:<{side_w}} ", style="dim")
+            t.append(val)
+        t.append("\n")
+    ticks = [k for k, (a, _) in enumerate(bins) if datetime.fromtimestamp(a).hour % 6 == 0]
+    t.append(" " * gut + "└" + "".join("┬" if k in ticks else "─" for k in range(len(bins))) + "\n",
+             style="dim")
+    under = [" "] * (len(bins) + 4)
+    for k, lab in [(k, _hour_label(bins[k][0])) for k in ticks] + [(len(bins) - 2, "now")]:
+        if k >= 0 and all(c == " " for c in under[max(0, k - 1):k + len(lab)]):
+            under[k:k + len(lab)] = lab
+    t.append(" " * (gut + 1) + "".join(under).rstrip() + "\n", style="dim")
+    return t
+
+
 def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
                limits: LimitsReport | None = None, limits_on: bool = False, polling: bool = True) -> Text:
     key, label, col = USAGE_METRICS[metric_idx % len(USAGE_METRICS)]
@@ -724,8 +799,10 @@ class AgentFarm(App):
     #left { width: 1fr; height: 1fr; }
     #fleet { height: 1; padding: 0 1; }
     #tree { width: 1fr; height: 1fr; border: none; padding: 0 1; scrollbar-size-horizontal: 0; }
-    #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; padding: 0 1; overflow-y: auto; }
+    #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; }
     #usage.hidden { display: none; }
+    #usage-body { height: 1fr; padding: 0 1; overflow-y: auto; }
+    #farm { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
     #detail { width: 1fr; height: 40%; min-height: 8; border-top: solid $primary-darken-2;
               padding: 0 1; overflow-y: auto; }
     #detail.hidden { display: none; }
@@ -793,7 +870,9 @@ class AgentFarm(App):
                     tree.show_root = False
                     tree.guide_depth = GUIDE_DEPTH
                     yield tree
-                yield Static("", id="usage")
+                with Vertical(id="usage"):              # scrolls above; the farm chart stays put below
+                    yield Static("", id="usage-body")
+                    yield Static("", id="farm")
             yield Static("", id="detail")
         yield Footer()
 
@@ -813,6 +892,7 @@ class AgentFarm(App):
         self.scan_usage()
         self.set_interval(REFRESH_S, self.collect)
         self.set_interval(USAGE_SCAN_S, self.scan_usage)
+        self.set_interval(FARM_REDRAW_S, self.render_farm)
         self._tick_limits(force=True)          # later fetches follow the work seen in each snapshot
 
     def on_resize(self) -> None:
@@ -836,7 +916,7 @@ class AgentFarm(App):
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
         self.query_one("#detail", Static).set_class(not show, "hidden")
         show_u = self.usage_forced
-        usage = self.query_one("#usage", Static)
+        usage = self.query_one("#usage")
         usage.set_class(not show_u, "hidden")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
             self.render_usage()
@@ -919,19 +999,38 @@ class AgentFarm(App):
         if changed:
             self._on_ui(self.render_usage)
 
+    def _usage_text_width(self) -> int:
+        """Columns for text in the usage column: its width inside the border, less padding."""
+        usage = self.query_one("#usage")
+        return max(30, (usage.size.width or USAGE_PANEL_WIDTH - 1) - 2)
+
     def render_usage(self) -> None:
         try:
-            usage = self.query_one("#usage", Static)
+            usage = self.query_one("#usage")
+            body = self.query_one("#usage-body", Static)
         except NoMatches:
             return
-        width = max(30, (usage.size.width or USAGE_PANEL_WIDTH) - 2)      # minus padding
+        width = self._usage_text_width()
         self._usage_width = usage.size.width
         self._limits_drawn = (_monotonic(), self._limits_polling())
-        usage.update(usage_text(self.usage, self.usage_metric, width,
-                                self.limits.report(), self.settings.show_limits, self._limits_polling()))
+        body.update(usage_text(self.usage, self.usage_metric, width,
+                               self.limits.report(), self.settings.show_limits, self._limits_polling()))
+        self.render_farm()
+
+    def render_farm(self) -> None:
+        """The agents-at-work chart. Also on a timer: the current hour fills in and the
+        hours shift along even when no transcript changes."""
+        try:
+            usage = self.query_one("#usage")
+            farm = self.query_one("#farm", Static)
+        except NoMatches:
+            return
+        if usage.has_class("hidden") or not self.usage.scanned_once:
+            return
+        farm.update(activity_text(self.usage.activity(), self._usage_text_width()))
 
     def action_toggle_usage(self) -> None:
-        usage = self.query_one("#usage", Static)
+        usage = self.query_one("#usage")
         self.usage_forced = usage.has_class("hidden")      # hidden -> show, shown -> hide
         self._apply_detail_visibility()
         if self.usage_forced:
