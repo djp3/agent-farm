@@ -4,12 +4,14 @@ A Mac app that shows every Claude Code session running on your machine in one wi
 what each one is doing, whether it is busy, idle or waiting for you, and the subagents or
 teammates working under it. Sessions in iTerm2 and in the Claude desktop app both appear.
 
-It is strictly read-only. Nothing is installed into Claude Code and no hooks are added;
-agent-farm only reads the files Claude Code already writes under `~/.claude`, looks at the
+It watches without taking part. Nothing is installed into Claude Code and no hooks are
+added; agent-farm reads the files Claude Code already writes under `~/.claude`, looks at the
 process list for the shells each session is running, and asks iTerm2 which tab owns which
-session. The one optional exception is the plan-limits block
-of the usage panel, off by default, which asks Anthropic for the same numbers `/usage`
-shows (see [The usage panel](#the-usage-panel)).
+session. Two things go further, and only when you ask: **keep** in the expiring pane marks
+a session's files as just used, so Claude Code's 30-day cleanup leaves it alone (no file's
+contents change; see [The expiring pane](#the-expiring-pane)), and the plan-limits block
+of the usage panel, off by default, asks Anthropic for the same numbers `/usage` shows
+(see [The usage panel](#the-usage-panel)).
 
 ## Install
 
@@ -31,17 +33,22 @@ tab-focus key.
 
 ![agent-farm showing a fleet of Claude Code sessions, the usage panel and the detail pane](docs/screenshot.png)
 
-From top to bottom:
+Under the title bar, two columns. On the left, from top to bottom:
 
-- **The title bar**: 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
-  Dock, Mission Control and the window switcher show whether the farm needs you.
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
 - **The tree**: one row per head session, ordered so that what needs you is at the top,
   with subagents nested beneath their lead and the shells each agent is running beneath it.
 - **The detail pane**: everything known about the selected row.
-- **The usage panel** (hidden until you press `u`): your token usage per day and per model,
-  and how many agents were at work in each of the last 24 hours.
+- **The expiring pane**: the sessions Claude Code will delete next, each with a keep button.
+
+On the right, **the usage panel** (hidden until you press `u`), down the full height of the
+window: your token usage per day and per model, and at the bottom how many agents were at
+work in each of the last 24 hours, as tall as the expiring pane beside it. With the panel
+hidden the left column takes the whole width.
+
+The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
+Dock, Mission Control and the window switcher show whether the farm needs you.
 
 ### Keys
 
@@ -49,6 +56,8 @@ From top to bottom:
 |-----|--------|
 | ↑ ↓ | move |
 | enter / space | fold or unfold the row's subagents and shells |
+| tab | move between the tree and the expiring pane |
+| k | in the expiring pane: keep the selected session another 30 days |
 | f | bring that session forward: its iTerm2 tab, or the Claude desktop app |
 | d | show / hide the detail pane (it hides itself when the window is short) |
 | u | show / hide the usage panel |
@@ -127,7 +136,36 @@ running (quick ones too: how long each has run, what it is for and the command i
 anything queued, and the last message. Desktop-app sessions add a `where` line. For a
 subagent: its state, its task, a teammate's own color (the one Claude Code shows its name
 in), its shells and its last message. For a shell: whether it is running or stale, how
-long, what it is for, the agent that started it, and the whole command.
+long, what it is for, the agent that started it, and the whole command. While the expiring
+pane has focus, the detail pane shows its selected session instead: when it was last used
+and when it expires, its folder, its size, and the command that resumes it.
+
+### The expiring pane
+
+Claude Code deletes a session 30 days after its last use: its transcript, subagents and
+tool results go at the first cleanup after that, and a cleanup runs a few minutes after any
+Claude Code session starts. (The period is `cleanupPeriodDays` in `~/.claude/settings.json`;
+0 means never, and the pane says so.) The pane at the bottom of the left column lists the
+sessions that turn that old within two weeks, soonest first.
+
+At the top a chart counts them per day for the next two weeks, today at the left. Below it
+each session has its name (the one `/resume` shows), when it expires (turns 30 days old;
+it is deleted at the first cleanup after that, and until then keep still saves it, so an
+expired session can be kept too), its size with its
+subagents and tool results, its folder, and a **keep** button. Two days or less to go is
+yellow, with a white name: it needs you. The rest are gray. Sessions you started in the
+Claude desktop app are not listed; Claude Code never deletes those by age.
+
+**keep** gives a session another full 30 days. A click on the button does it, or tab to the
+pane, pick a session with ↑ ↓ and press `k`. agent-farm sets the modification time of
+everything Claude Code judges the session by to now: the transcript and the files beside
+it, the tool results, and the session's checkpoints, environment and task list. Nothing is
+written into any file, and resuming a session keeps it too. A kept session shows green for
+a minute, with the date it is safe until, and then leaves the list.
+
+The pane is as tall as the agents-at-work chart beside it and scrolls when the sessions do
+not all fit. It hides itself in a short window, and the **Expiring pane** setting turns it
+off, leaving the left column to the tree and the detail pane.
 
 ### Ordering
 
@@ -152,6 +190,7 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
 - **Align activity text** (on): pad names to a fixed column so the activity text lines up.
 - **Plan limits in the usage panel** (off): the `/usage` windows, fetched with your Claude
   Code sign-in. See the usage panel section for what that involves.
+- **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
 - **Ordering**: attention, activity, started or name.
 
 **Monitor ▸ Reveal Settings File** shows the JSON file behind the panel; the name column
@@ -237,7 +276,7 @@ it again.
 Claude Code keeps a registry entry per running session in `~/.claude/sessions`, with its
 busy or idle state, and appends every turn to a transcript under `~/.claude/projects`;
 subagents get transcripts of their own next to their lead's. agent-farm tails those files
-once a second, looks at which shells each session's process is running, asks iTerm2's
+once a second, checks their modification times once a minute for the expiring pane, looks at which shells each session's process is running, asks iTerm2's
 `it2` tool which tab owns which terminal, and draws the result. The app is a Python program (Textual) running inside a native window; see
 [DEVELOPMENT.md](DEVELOPMENT.md) to run it from source, build the app or cut a release.
 

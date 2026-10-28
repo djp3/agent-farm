@@ -28,6 +28,7 @@ class Settings:
     show_usage: bool = False            # usage panel open at launch
     align_columns: bool = True          # pad names to a fixed column so activity text lines up
     show_limits: bool = False           # plan limits (/usage) in the usage panel; reads the Keychain sign-in
+    show_expiring: bool = True          # the expiring pane: sessions Claude Code deletes next, with keep
     name_column_width: int = 26         # width of that name column (edit here; not in the panel)
 
     @classmethod
