@@ -2,10 +2,12 @@
 agent-farm — a Textual TUI that watches every Claude Code instance on this Mac.
 
 Head agents are the tree rows and their subagents / teammates nest beneath them, with the
-shells each agent is running beneath it; the detail pane for the highlighted row sits underneath, and a usage panel (tokens per day across every
-transcript) sits to the right of the tree.
+shells each agent is running beneath it. The left column holds the tree, the detail pane for
+the selected row, and the expiring pane (the sessions Claude Code deletes next); the usage
+column (tokens per day across every transcript, and agents at work) runs down the right.
 Keys: ↑/↓ move · enter/space fold · f bring the session forward (iTerm2 tab or Claude app) ·
-d detail · u usage · m metric · s settings · r refresh · q quit
+tab to the expiring pane and k to keep a session · d detail · u usage · m metric ·
+s settings · r refresh · q quit
 Instances are ordered by the Ordering chosen in Settings (see ordering.py); `--order NAME` overrides for one run.
 """
 from __future__ import annotations
@@ -14,21 +16,24 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import groupby
 
 from rich.style import Style
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Static, Switch,
                              Tree)
 from textual.widgets.tree import TreeNode
@@ -36,6 +41,8 @@ from textual.widgets.tree import TreeNode
 from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, Shell, fmt_age,
                        fmt_tokens, setup_logging)
 from apppaths import app_version
+from expiring import DAY, DEFAULT_PERIOD_DAYS, Expiring, ExpiryScanner
+from expiring import WINDOW_DAYS as EXPIRY_DAYS
 from limits import LimitsReport, PlanLimits
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from settings import Settings
@@ -795,6 +802,291 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
     return t
 
 
+# The expiring pane: the sessions Claude Code deletes next (see expiring.py), soonest first,
+# under a chart of how many turn old on each of the next two weeks' days. It sits at the
+# bottom of the left column as tall as the agents-at-work chart beside it, so the lines
+# above the two meet across the window.
+BOTTOM_ROWS = ACTIVITY_ROWS + 5        # chart title, rows, axis, hour labels, blank, border
+EXPIRY_SCAN_S = 60.0
+EXPIRY_CHART_ROWS = 3
+EXPIRY_HEAD_ROWS = 1 + EXPIRY_CHART_ROWS + 1   # title, chart, weekday labels
+EXPIRY_NAME_W = 28
+EXPIRY_WHEN_W = 14                     # "expires today", "expires Nov 14", "expired"
+DAY_BLOCK, DAY_NONE = "██", "▁▁"
+KEEP_LABEL = " keep "
+CURSOR_BG = "#1f3b5c"                  # the tree's focused cursor bar
+
+
+def _day_month(ts: float) -> str:
+    d = datetime.fromtimestamp(ts)
+    return f"{d:%b} {d.day}"
+
+
+def _expires_when(e: Expiring, now: float) -> str:
+    """When the session turns old enough to delete. It is still there until Claude Code's
+    next cleanup after that, and keep still saves it: hence expires, never deleted."""
+    if e.deletes_at <= now:
+        return "expired"
+    days = (datetime.fromtimestamp(e.deletes_at).date() - datetime.fromtimestamp(now).date()).days
+    if days == 0:
+        return "expires today"
+    if days < 7:
+        return f"expires {datetime.fromtimestamp(e.deletes_at):%a}"
+    return f"expires {_day_month(e.deletes_at)}"
+
+
+def _megabytes(n: int) -> str:
+    return f"{n / 1e6:.1f} MB" if n >= 100_000 else f"{max(1, round(n / 1e3))} kB"
+
+
+def _fit(s: str, width: int) -> str:
+    return (s if len(s) <= width else s[:max(0, width - 1)] + "…").ljust(width)
+
+
+def _last_folders(cwd: str) -> str:
+    return "/".join([p for p in cwd.split("/") if p][-2:])
+
+
+def expiry_room(lines: int, n: int) -> int:
+    """How many sessions fit under the chart: all of them, or one fewer to make room for
+    the line that says how many more there are."""
+    avail = max(0, lines - EXPIRY_HEAD_ROWS)
+    return n if n <= avail else max(0, avail - 1)
+
+
+def expiring_text(entries: list[Expiring], now: float, width: int, lines: int,
+                  period: float | None, cursor: int | None = None, top: int = 0) -> Text:
+    """The pane's text. Each session row carries its index as `row` meta and its keep button
+    as `keep` meta, for the mouse. Yellow is two days or less to go: it needs you."""
+    t = Text()
+    pending = [e for e in entries if not e.kept_at]
+    t.append("expiring", style=f"bold {YELLOW if any(e.soon(now) for e in pending) else GRAY}")
+    if period is None:
+        t.append("  Claude Code keeps every session here (cleanupPeriodDays is 0)\n", style=f"italic {GRAY}")
+        return t
+    t.append(f"  Claude Code deletes a session {period:g} days after its last use\n", style=f"italic {GRAY}")
+    today = datetime.fromtimestamp(now).date()
+    # Each day's bar stacks its sessions in list order, the soonest at the bottom, so the
+    # selected session lights its own block (or the count, when it is above the chart).
+    counts = [0] * EXPIRY_DAYS
+    lit_day, lit_level = -1, 0
+    for i, e in enumerate(entries):
+        if e.kept_at:
+            continue
+        d = max(0, (datetime.fromtimestamp(e.deletes_at).date() - today).days)
+        if d < EXPIRY_DAYS:
+            counts[d] += 1
+            if i == cursor:
+                lit_day, lit_level = d, counts[d]
+    for level in range(EXPIRY_CHART_ROWS, 0, -1):
+        t.append("  ")
+        for d, n in enumerate(counts):
+            hue = YELLOW if d < 2 else GRAY
+            if level == EXPIRY_CHART_ROWS and n > EXPIRY_CHART_ROWS:
+                lit = d == lit_day and lit_level >= level
+                t.append(f"{n:>2}", style=f"bold {WHITE if lit else hue}")   # taller than the chart: how many
+            elif n >= level:
+                t.append(DAY_BLOCK, style=WHITE if (d, level) == (lit_day, lit_level) else hue)
+            elif level == 1:
+                t.append(DAY_NONE, style=DARK_GRAY)
+            else:
+                t.append("  ")
+            t.append(" ")
+        t.append("\n")
+    t.append("  ")
+    for d in range(EXPIRY_DAYS):
+        label = (today + timedelta(days=d)).strftime("%a")[:2]
+        t.append(label, style=f"bold {YELLOW}" if d == 0 else YELLOW if d == 1 else "dim")
+        t.append(" ")
+    t.append("\n")
+    if not entries:
+        t.append(f"  nothing turns {period:g} days old in the next two weeks\n", style="dim")
+        return t
+    room = expiry_room(lines, len(entries))
+    top = max(0, min(top, len(entries) - room))
+    name_w = min(EXPIRY_NAME_W, max(12, width // 4))
+    where_w = max(0, width - (2 + 2 + name_w + 1 + EXPIRY_WHEN_W + 8 + 2 + 1 + len(KEEP_LABEL)))
+    for i in range(top, top + room):
+        e = entries[i]
+        row = Text()
+        button_at = None
+        if e.kept_at:
+            row.append("✓ ", style=GREEN)
+            row.append(_fit(e.title or "untitled", name_w), style=f"bold {GREEN}")
+            row.append(f" kept · safe until {_day_month(e.kept_at + period * DAY)}", style=GREEN)
+        else:
+            soon = e.soon(now)
+            row.append("▷ ", style=YELLOW if soon else GRAY)
+            row.append(_fit(e.title or "untitled", name_w), style=f"bold {WHITE if soon else GRAY}")
+            row.append(" ")
+            row.append(f"{_expires_when(e, now):<{EXPIRY_WHEN_W}}", style=f"italic {YELLOW if soon else GRAY}")
+            row.append(f"{_megabytes(e.size):>8}  ", style=GRAY)
+            row.append(_fit(_last_folders(e.cwd), where_w), style=GRAY)
+            row.append(" ")
+            button_at = len(row)
+            row.append(KEEP_LABEL, style=Style(bold=True, color="#111111", bgcolor=YELLOW if soon else GRAY,
+                                               meta={"keep": i}))
+        row.stylize(Style(meta={"row": i}))
+        if i == cursor:                    # the bar stops short of the button, which keeps its color
+            row.stylize(Style(bgcolor=CURSOR_BG), 0, button_at)
+        t.append("  ")
+        t.append_text(row)
+        t.append("\n")
+    below = entries[top + room:]
+    if top or below:
+        week = sum(1 for e in below if e.deletes_at - now < 7 * DAY)
+        parts = [f"{top} above"] if top else []
+        if week:
+            parts.append(f"{week} more this week")
+        if len(below) > week:
+            parts.append(f"{len(below) - week} {'' if week else 'more '}next week")
+        t.append("  + " + ", ".join(parts) + "  ·  scroll for them\n", style="dim")
+    return t
+
+
+def _home_short(path: str) -> str:
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
+def _cd_line(cwd: str) -> str:
+    """`cd` to a folder as a shell reads it: ~ stays outside the quotes so it expands."""
+    short = _home_short(cwd)
+    if short.startswith("~/"):
+        return "cd ~/" + shlex.quote(short[2:])
+    return f"cd {shlex.quote(cwd)}"
+
+
+def expiring_detail(e: Expiring, now: float, period: float | None, live: bool = False) -> Text:
+    out = Text()
+    period = period or DEFAULT_PERIOD_DAYS
+
+    def kv(k: str, v: str, style: str = ""):
+        out.append(f"{k:<10}", style="bold dim")
+        out.append(f"{v}\n", style=style)
+
+    out.append(e.title or "untitled", style="bold underline")
+    out.append("\n")
+    used = datetime.fromtimestamp(e.last_used)
+    if e.kept_at:
+        kv("status", f"kept {fmt_age(e.kept_at, now)} ago · safe until {_day_month(e.kept_at + period * DAY)}",
+           GREEN)
+    else:
+        kv("status", f"{'open in a session, but quiet' if live else 'not running'} · last used "
+                     f"{used:%a %b} {used.day} {used:%H:%M}, {fmt_age(e.last_used, now)} ago")
+        at = datetime.fromtimestamp(e.deletes_at)
+        stamp = f"{at:%a %b} {at.day} {at:%H:%M}"
+        kv("expires", (f"expired {stamp}" if e.deletes_at <= now else stamp)
+           + f", {period:g} days after its last use. Claude Code deletes it at its first cleanup after "
+             "that (one runs a few minutes after any session starts); until then keep saves it.",
+           YELLOW if e.soon(now) else "")
+    kv("cwd", _home_short(e.cwd) or "(unknown)")
+    kv("size", f"{_megabytes(e.size)} with its subagents and tool results")
+    if not e.kept_at:
+        kv("keep", f"k or its keep button gives it {period:g} more days: agent-farm marks the transcript, "
+                   "its tool results and its checkpoints as just used. Nothing inside them changes.")
+    kv("resume", (f"{_cd_line(e.cwd)} && " if e.cwd else "") + f"claude --resume {e.session_id}"
+       + "  (resuming keeps it too)")
+    return out
+
+
+class ExpiringPane(Widget, can_focus=True):
+    """The expiring pane. A click on a session's keep button keeps it; from the keyboard,
+    tab here, pick one with the arrows and press k. The rows scroll when they do not all
+    fit, and the detail pane follows the selected one while this pane has focus."""
+    BINDINGS = [
+        Binding("up", "move(-1)", "Up", show=False),
+        Binding("down", "move(1)", "Down", show=False),
+        Binding("k", "keep", "Keep"),
+    ]
+
+    class Highlighted(Message):
+        """The selected session changed, or the pane gained or lost focus."""
+
+    class Keep(Message):
+        def __init__(self, entry: Expiring) -> None:
+            super().__init__()
+            self.entry = entry
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.entries: list[Expiring] = []
+        self.period: float | None = DEFAULT_PERIOD_DAYS
+        self.cursor_row = 0
+        self.top_row = 0                 # the first session row shown
+
+    @property
+    def selected(self) -> Expiring | None:
+        return self.entries[self.cursor_row] if 0 <= self.cursor_row < len(self.entries) else None
+
+    def set_entries(self, entries: list[Expiring], period: float | None) -> None:
+        """New scan results; the cursor stays on the same session when rows move."""
+        sid = self.selected.session_id if self.selected else None
+        self.entries, self.period = entries, period
+        ids = [e.session_id for e in entries]
+        self.cursor_row = ids.index(sid) if sid in ids else min(self.cursor_row, max(0, len(entries) - 1))
+        self._follow_cursor()
+        self.refresh()
+
+    def _room(self) -> int:
+        return expiry_room(self.content_size.height, len(self.entries))
+
+    def _follow_cursor(self) -> None:
+        room = self._room()
+        if room <= 0:
+            return
+        if self.cursor_row < self.top_row:
+            self.top_row = self.cursor_row
+        elif self.cursor_row >= self.top_row + room:
+            self.top_row = self.cursor_row - room + 1
+        self.top_row = max(0, min(self.top_row, len(self.entries) - room))
+
+    def render(self) -> Text:
+        return expiring_text(self.entries, time.time(), self.content_size.width, self.content_size.height,
+                             self.period, self.cursor_row if self.has_focus else None, self.top_row)
+
+    def action_move(self, step: int) -> None:
+        if self.entries:
+            self.cursor_row = max(0, min(len(self.entries) - 1, self.cursor_row + step))
+            self._follow_cursor()
+            self.refresh()
+            self.post_message(self.Highlighted())
+
+    def action_keep(self) -> None:
+        e = self.selected
+        if e is not None and not e.kept_at:
+            self.post_message(self.Keep(e))
+
+    def on_click(self, event: events.Click) -> None:
+        meta = event.style.meta
+        if isinstance(meta.get("row"), int) and meta["row"] < len(self.entries):
+            self.cursor_row = meta["row"]
+            self.refresh()
+            self.post_message(self.Highlighted())
+        if isinstance(meta.get("keep"), int):
+            self.action_keep()
+
+    def _scroll(self, step: int) -> None:
+        self.top_row = max(0, min(self.top_row + step, len(self.entries) - self._room()))
+        self.refresh()
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._scroll(1)
+        event.stop()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._scroll(-1)
+        event.stop()
+
+    def on_focus(self) -> None:
+        self.refresh()
+        self.post_message(self.Highlighted())
+
+    def on_blur(self) -> None:
+        self.refresh()
+        self.post_message(self.Highlighted())
+
+
 def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
                limits: LimitsReport | None = None, limits_on: bool = False, polling: bool = True) -> Text:
     key, label, col = USAGE_METRICS[metric_idx % len(USAGE_METRICS)]
@@ -901,6 +1193,10 @@ class SettingsScreen(Screen):
                 yield Label("Plan limits in the usage panel  (what /usage shows; reads the Claude Code sign-in "
                             "from your Keychain, so macOS may ask you to allow it)")
                 yield Switch(value=self.settings.show_limits, id="show_limits")
+            with Horizontal(classes="row"):
+                yield Label("Expiring pane  (the sessions Claude Code deletes next, each with a keep button; "
+                            "it hides itself in a short window)")
+                yield Switch(value=self.settings.show_expiring, id="show_expiring")
             yield Static("Ordering  (applies now and at launch)", classes="section")
             with RadioSet(id="ordering"):
                 for o in ORDERINGS:
@@ -918,6 +1214,8 @@ class SettingsScreen(Screen):
             self.settings.align_columns = event.value
         elif event.switch.id == "show_limits":
             self.settings.show_limits = event.value
+        elif event.switch.id == "show_expiring":
+            self.settings.show_expiring = event.value
         self._changed()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -939,7 +1237,6 @@ class AgentFarm(App):
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }
-    #top { height: 1fr; }
     #left { width: 1fr; height: 1fr; }
     #fleet { height: 1; padding: 0 1; }
     #tree { width: 1fr; height: 1fr; border: none; padding: 0 1; scrollbar-size-horizontal: 0; }
@@ -950,10 +1247,12 @@ class AgentFarm(App):
     #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; }
     #usage.hidden { display: none; }
     #usage-body { height: 1fr; padding: 0 1; overflow-y: auto; }
-    #farm { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
-    #detail { width: 1fr; height: 40%; min-height: 8; border-top: solid $primary-darken-2;
+    #farm { padding: 0 1; border-top: solid $primary-darken-2; }
+    #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;
               padding: 0 1; overflow-y: auto; }
     #detail.hidden { display: none; }
+    #expiring { padding: 0 1; border-top: solid $primary-darken-2; }
+    #expiring.hidden { display: none; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -978,6 +1277,7 @@ class AgentFarm(App):
             show_usage = self.settings.show_usage
         self.collector = Collector()
         self.usage = UsageScanner()
+        self.expiry = ExpiryScanner()
         self.limits = PlanLimits()
         self.usage_metric = 0
         # The usage panel shows when the setting or --usage says so, and `u` toggles it.
@@ -1010,18 +1310,22 @@ class AgentFarm(App):
     # ---- layout -----------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Vertical(id="body"):
-            with Horizontal(id="top"):
-                with Vertical(id="left"):
-                    yield Static(Text("starting…", style="dim"), id="fleet")
-                    tree: Tree = AgentTree("Claude instances", id="tree", look_lookup=self._look_for_key)
-                    tree.show_root = False
-                    tree.guide_depth = GUIDE_DEPTH
-                    yield tree
-                with Vertical(id="usage"):              # scrolls above; the farm chart stays put below
-                    yield Static("", id="usage-body")
-                    yield Static("", id="farm")
-            yield Static("", id="detail")
+        with Horizontal(id="body"):
+            with Vertical(id="left"):                   # the tree, the selected row, what expires
+                yield Static(Text("starting…", style="dim"), id="fleet")
+                tree: Tree = AgentTree("Claude instances", id="tree", look_lookup=self._look_for_key)
+                tree.show_root = False
+                tree.guide_depth = GUIDE_DEPTH
+                yield tree
+                yield Static("", id="detail")
+                expiring = ExpiringPane(id="expiring")
+                expiring.styles.height = BOTTOM_ROWS
+                yield expiring
+            with Vertical(id="usage"):                  # scrolls above; the farm chart stays put below
+                yield Static("", id="usage-body")
+                farm = Static("", id="farm")
+                farm.styles.height = BOTTOM_ROWS        # as tall as the expiring pane: their tops meet
+                yield farm
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1038,8 +1342,10 @@ class AgentFarm(App):
         self.render_usage()
         self.collect()
         self.scan_usage()
+        self.scan_expiring()
         self.set_interval(REFRESH_S, self.collect)
         self.set_interval(USAGE_SCAN_S, self.scan_usage)
+        self.set_interval(EXPIRY_SCAN_S, self.scan_expiring)
         self.set_interval(FARM_REDRAW_S, self.render_farm)
         self._tick_limits(force=True)          # later fetches follow the work seen in each snapshot
 
@@ -1068,6 +1374,16 @@ class AgentFarm(App):
         usage.set_class(not show_u, "hidden")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
             self.render_usage()
+        # The expiring pane follows its setting, and steps aside in a window too short to
+        # leave the tree room.
+        show_x = self.settings.show_expiring and self.size.height >= SHORT_ROWS + BOTTOM_ROWS
+        pane = self.query_one("#expiring", ExpiringPane)
+        if pane.has_class("hidden") == show_x:
+            pane.set_class(not show_x, "hidden")
+            if show_x:
+                self.render_expiring()
+            elif pane.has_focus:
+                self.query_one("#tree", Tree).focus()
 
     # ---- data -------------------------------------------------------------
     def _on_ui(self, fn, *args, **kwargs) -> None:
@@ -1104,6 +1420,43 @@ class AgentFarm(App):
             return
         if changed or not self._usage_width:
             self._on_ui(self.render_usage)
+
+    @work(thread=True, exclusive=True, group="expiring")
+    def scan_expiring(self) -> None:
+        """Also on a timer while the pane is on: "expires today" and the chart move with the
+        clock, and a kept session's green row goes after a minute."""
+        if not self.settings.show_expiring:
+            return
+        try:
+            self.expiry.scan()
+        except Exception:
+            log.exception("expiring scan failed")
+            return
+        self._on_ui(self.render_expiring)
+
+    @work(thread=True, group="keep")
+    def keep_session(self, entry: Expiring) -> None:
+        try:
+            self.expiry.keep(entry)
+            self.expiry.scan()
+        except Exception:
+            log.exception("keep failed")
+        self._on_ui(self.render_expiring)
+
+    def render_expiring(self) -> None:
+        try:
+            pane = self.query_one("#expiring", ExpiringPane)
+        except NoMatches:          # another screen is up; the next scan catches up
+            return
+        pane.set_entries(self.expiry.entries(), self.expiry.period_days)
+        if pane.has_focus:
+            self._refresh_detail()
+
+    def on_expiring_pane_highlighted(self, message: ExpiringPane.Highlighted) -> None:
+        self._refresh_detail()
+
+    def on_expiring_pane_keep(self, message: ExpiringPane.Keep) -> None:
+        self.keep_session(message.entry)
 
     def _limits_polling(self) -> bool:
         """Will a fetch follow? Only once something has worked since the last one: the
@@ -1434,7 +1787,14 @@ class AgentFarm(App):
         try:
             tree = self.query_one("#tree", Tree)
             detail = self.query_one("#detail", Static)
+            pane = self.query_one("#expiring", ExpiringPane)
         except NoMatches:
+            return
+        if pane.has_focus:                     # the detail pane follows whichever list has focus
+            e = pane.selected
+            live = e is not None and any(i.alive and i.session_id == e.session_id for i in self.instances)
+            detail.update(expiring_detail(e, time.time(), pane.period, live) if e
+                          else Text("nothing expires in the next two weeks", style="dim"))
             return
         node = node or tree.cursor_node
         if node is None or node.data is None:
@@ -1458,6 +1818,7 @@ class AgentFarm(App):
                 pass
         self.render_usage()                    # the plan-limits block follows its setting at once
         self._tick_limits(force=True)
+        self.scan_expiring()                   # the pane shows on return with a fresh list
         # Labels are rebuilt from the current instances on the main screen's next apply.
         self.call_later(lambda: self.apply_snapshot(list(self.instances)) if self.instances else None)
 
