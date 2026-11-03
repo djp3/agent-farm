@@ -79,6 +79,7 @@ BAR_HUE, BAR_HUE_TODAY = "dim #00d75f", "#00d75f"
 # order, one glyph texture per slot so the stacked bar reads without color.
 MODEL_SLOTS = (("#3987e5", "█"), ("#d95926", "▓"), ("#199e70", "▒"), ("#c98500", "░"))
 MODEL_OTHER = ("#888888", "·")
+MODEL_SPLIT_TOP = 3                       # the output-by-model bar names this many, the rest are Other
 _model_slot: dict[str, int] = {}          # model -> slot index, assigned on first sight
 
 
@@ -89,13 +90,19 @@ def model_slot(model: str) -> tuple[str, str]:
     return MODEL_SLOTS[idx] if idx < len(MODEL_SLOTS) else MODEL_OTHER
 
 
+def model_hues(split: list[tuple[str, int]]) -> dict[str, str]:
+    """The hue of each model the output-by-model bar names, biggest first. Asked in the bar's
+    own order, so this assigns the same slots drawing the bar would."""
+    return {m: model_slot(m)[0] for m, _ in split[:MODEL_SPLIT_TOP]}
+
+
 def model_split_text(split: list[tuple[str, int]], width: int) -> Text:
     """A full-width stacked bar of output tokens by model, top three plus Other, with a
     legend line of swatch, name and share."""
     t = Text()
     total = sum(n for _, n in split) or 1
-    top = split[:3]
-    other = sum(n for _, n in split[3:])
+    top = split[:MODEL_SPLIT_TOP]
+    other = sum(n for _, n in split[MODEL_SPLIT_TOP:])
     parts = [(m, n, model_slot(m)) for m, n in top]
     if other:
         parts.append(("other", other, MODEL_OTHER))
@@ -643,15 +650,33 @@ def _bar(frac: float, width: int) -> str:
 PACE_TICK = "┃"
 PACE_TICK_ON_TRACK = "bold #ffffff"
 PACE_TICK_NOTCH = "#121212"   # the panel background, so over the fill the tick is a gap cut into it
+SEVERITY_HUES = {"normal": BAR_HUE_TODAY, "warning": LIMIT_WARN, "critical": LIMIT_OVER}
 
 
-def _limit_bar(pct: float, width: int, elapsed: float | None = None) -> Text:
-    """A budget bar: the used share in green, orange from 75% and red from 90%, over a dim
-    track so the unused share stays visible (the percent beside it says the same).
+def _limit_hue(pct: float, severity: str = "", calm: str = BAR_HUE_TODAY) -> str:
+    """The server's reading of a window when it gives one, else orange from 75% and red from
+    90%. A window that needs no attention wears `calm`."""
+    hue = SEVERITY_HUES.get(severity) or (LIMIT_OVER if pct >= 90 else LIMIT_WARN if pct >= 75 else BAR_HUE_TODAY)
+    return calm if hue == BAR_HUE_TODAY else hue
+
+
+def _calm_hue(label: str, hues: dict[str, str]) -> str:
+    """A model's week wears the hue that model has in the output-by-model bar: "week · fable"
+    takes the biggest of the Fable versions there. Anything else stays green."""
+    name = label.removeprefix("week · ")
+    if name == label:
+        return BAR_HUE_TODAY
+    return next((hue for m, hue in hues.items() if m == name or m.startswith(f"{name}-")), BAR_HUE_TODAY)
+
+
+def _limit_bar(pct: float, width: int, elapsed: float | None = None, severity: str = "",
+               calm: str = BAR_HUE_TODAY) -> Text:
+    """A budget bar: the used share in its hue (_limit_hue) over a dim track so the unused
+    share stays visible (the percent beside it says the same).
     `elapsed` (0..1, how far through its window the clock is) adds a tick where an even
     pace would be: fill that stops short of the tick is under pace, fill past it is ahead.
     Over the fill the tick is a notch, over the track a bright line."""
-    hue = LIMIT_OVER if pct >= 90 else LIMIT_WARN if pct >= 75 else BAR_HUE_TODAY
+    hue = _limit_hue(pct, severity, calm)
     filled = _bar(pct / 100, width).rstrip()
     cells = [(ch, hue) for ch in filled] + [("·", "dim")] * (width - len(filled))
     if elapsed is not None and width > 0:
@@ -663,6 +688,21 @@ def _limit_bar(pct: float, width: int, elapsed: float | None = None) -> Text:
     for style, run in groupby(cells, key=lambda c: c[1]):
         t.append("".join(ch for ch, _ in run), style=style)
     return t
+
+
+def _surface_lines(surfaces: tuple[tuple[str, float], ...], width: int) -> list[str]:
+    """The week's use by surface, as many lines as it takes, never breaking inside a surface."""
+    lead = "used in "
+    lines: list[str] = []
+    for name, pct in surfaces:
+        part = f"{name} {int(pct)}%"
+        if not lines:
+            lines.append(lead + part)
+        elif len(lines[-1]) + 3 + len(part) <= width:
+            lines[-1] += f" · {part}"
+        else:
+            lines.append(" " * len(lead) + part)
+    return lines
 
 
 def fmt_countdown(at: datetime | None, now: float) -> str:
@@ -684,7 +724,7 @@ def fmt_countdown(at: datetime | None, now: float) -> str:
 
 
 def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float | None = None,
-                polling: bool = True) -> Text:
+                polling: bool = True, hues: dict[str, str] | None = None) -> Text:
     """The plan-limit block of the usage panel: what /usage shows in Claude Code, one bar per
     window. Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
     Not polling (nothing has worked since the last fetch): the age keeps growing, so the
@@ -714,12 +754,15 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     bar_w = max(8, width - label_w - 1 - 1 - 4 - 2 - reset_w)
     for w in rep.windows:
         t.append(f"{w.label:<{label_w}} ", style="dim")
-        t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now)))
-        t.append(f" {int(w.used_pct):>3}%", style="bold" if w.used_pct >= 75 else "")
+        t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now), w.severity, _calm_hue(w.label, hues or {})))
+        calm = _limit_hue(w.used_pct, w.severity) == BAR_HUE_TODAY
+        t.append(f" {int(w.used_pct):>3}%", style="" if calm else "bold")
         left = fmt_countdown(w.resets_at, now)
         if left:
             t.append(f"  {left:>{reset_w}}", style="dim")
         t.append("\n")
+    for line in _surface_lines(rep.surfaces, width):
+        t.append(line + "\n", style="dim")
     return t
 
 
@@ -1101,7 +1144,8 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
     t.append(f"out {fmt_count(today.out_tokens)} · in {fmt_count(today.in_tokens)}\n")
     t.append("        ", style="dim")
     t.append(f"{today.messages} msgs · {today.session_count} sessions\n\n")
-    t.append_text(limits_text(limits, limits_on, width, polling=polling))
+    split = [(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0]
+    t.append_text(limits_text(limits, limits_on, width, polling=polling, hues=model_hues(split)))
     t.append("\n")
 
     vals = [getattr(d, key) for d in days]
@@ -1127,7 +1171,6 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
         # recessed values: only today and the window maximum carry full ink
         t.append(f"{fmt_count(v):>{val_w}}\n", style="bold" if (is_today or is_max) else "dim")
 
-    split = [(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0]
     if split:
         t.append("\n")
         t.append(f"output by model · {USAGE_DAYS} days\n", style="dim")

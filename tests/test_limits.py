@@ -18,6 +18,33 @@ REPLY = {
     "seven_day_sonnet": {"utilization": None, "resets_at": None},
     "extra_usage": {"is_enabled": False, "utilization": None},
 }
+# The shape of a reply on a plan with no 5-hour window (seen 2026-11-03); the numbers are made up.
+WEEK_END = "2026-11-07T07:00:00.093696+00:00"
+ULTRA_REPLY = {
+    "five_hour": None,
+    "seven_day": {"utilization": 31.0, "resets_at": WEEK_END, "limit_dollars": None, "used_dollars": None,
+                  "remaining_dollars": None, "locked_reason": None},
+    "seven_day_opus": None,
+    "seven_day_sonnet": None,
+    "seven_day_breakdown": {"as_of": WEEK_END, "window_started_at": WEEK_END,
+                            "rows": [{"key": "claude_code", "display_name": "Claude Code", "percent": 98},
+                                     {"key": "chat", "display_name": "Chats", "percent": 1},
+                                     {"key": "cowork", "display_name": "Cowork", "percent": 1},
+                                     {"key": "other", "display_name": "Other", "percent": 0}]},
+    "limits": [
+        {"kind": "weekly_all", "group": "weekly", "percent": 31, "severity": "normal", "resets_at": WEEK_END,
+         "scope": None, "is_active": False},
+        {"kind": "weekly_scoped", "group": "weekly", "percent": 52, "severity": "normal", "resets_at": WEEK_END,
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}, "is_active": True},
+    ],
+    "weekly_scoped_shares": [{"limit_index": 1, "used_percent_of_weekly": 26, "allowance_percent_of_weekly": 50}],
+    "extra_usage": {"is_enabled": True, "monthly_limit": 10000, "used_credits": 0.0, "utilization": None,
+                    "currency": "USD", "decimal_places": 2, "disabled_reason": None, "user_disabled": False,
+                    "spend_limit_reached": False, "credits_ever_enabled": True, "daily": None, "weekly": None},
+    "spend": {"used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+              "limit": {"amount_minor": 10000, "currency": "USD", "exponent": 2},
+              "percent": 0, "severity": "normal", "enabled": True, "disabled_reason": None},
+}
 TOKEN = "sk-ant-oat01-SECRET-TOKEN-VALUE"
 CREDS = json.dumps({"claudeAiOauth": {"accessToken": TOKEN, "expiresAt": 4102444800000,
                                       "subscriptionType": "max"}})
@@ -34,14 +61,118 @@ def test_model_scoped_week_comes_from_the_limits_list():
     scoped = {"kind": "weekly_scoped", "group": "weekly", "percent": 95, "severity": "critical",
               "resets_at": "2026-10-17T07:00:00Z",
               "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}
-    data = dict(REPLY, limits=[{"kind": "session", "percent": 3}, scoped, {"kind": "weekly_scoped"},
-                               dict(scoped, scope={"model": {"display_name": "Opus"}})])
-    data["seven_day_opus"] = {"utilization": 10, "resets_at": None}
-    rep = parse_report(data, "max", now=1.0)
-    assert [(w.label, int(w.used_pct)) for w in rep.windows] == [
-        ("session", 42), ("week", 15), ("week · opus", 10), ("week · fable", 95)]   # no duplicate opus
+    rep = parse_report(dict(REPLY, limits=[scoped, {"kind": "weekly_scoped"}]), "max", now=1.0)
+    assert [(w.label, int(w.used_pct)) for w in rep.windows] == [("session", 42), ("week", 15), ("week · fable", 95)]
     assert rep.windows[-1].resets_at == datetime(2026, 10, 17, 7, tzinfo=timezone.utc)
     assert main.limits_text(rep, True, 48).plain.splitlines()[-1].startswith("week · fable")
+
+
+def test_a_window_in_both_places_shows_once_from_the_limits_rows():
+    opus = {"kind": "weekly_scoped", "percent": 95, "scope": {"model": {"display_name": "Opus"}}}
+    data = dict(REPLY, seven_day_opus={"utilization": 10, "resets_at": None},
+                limits=[opus, {"kind": "session", "percent": 3}])
+    rep = parse_report(data, "max", now=1.0)
+    assert [(w.label, int(w.used_pct)) for w in rep.windows] == [("session", 3), ("week", 15), ("week · opus", 95)]
+
+
+def test_ultra_reply_has_no_session_and_keeps_the_extra_bar():
+    now = datetime(2026, 11, 3, 7, 0, tzinfo=timezone.utc).timestamp()
+    rep = parse_report(ULTRA_REPLY, "ultra", now=now)
+    assert [(w.label, int(w.used_pct)) for w in rep.windows] == [("week", 31), ("week · fable", 52), ("extra", 0)]
+    assert not rep.error
+    assert rep.windows[0].elapsed(now) is not None and rep.windows[-1].elapsed(now) is None
+    lines = main.limits_text(rep, True, 48, now=now).plain.splitlines()
+    assert lines[0].startswith("plan limits · ultra") and len(lines) == 5
+    assert not any("session" in line for line in lines)
+    assert lines[3].startswith("extra") and lines[3].endswith("  0%")       # no clock, so no time left
+    assert all(len(line) <= 48 for line in lines)
+
+
+def test_a_models_week_wears_that_models_hue_from_the_output_bar(monkeypatch):
+    monkeypatch.setattr(main, "_model_slot", {})
+    split = [("opus-5-5", 90), ("fable-5-1", 80), ("fable-5", 70), ("haiku-5-5", 10)]
+    hues = main.model_hues(split)
+    assert list(hues) == ["opus-5-5", "fable-5-1", "fable-5"]          # what the bar names
+    opus, fable = main.MODEL_SLOTS[0][0], main.MODEL_SLOTS[1][0]
+    drawn = {s.style for s in main.limits_text(parse_report(ULTRA_REPLY, "", 1.0), True, 48, now=1.0, hues=hues).spans}
+    assert fable in drawn and main.BAR_HUE_TODAY in drawn              # the biggest Fable version; the week stays green
+    assert opus not in drawn
+    assert main._calm_hue("week · opus", hues) == opus
+    # drawing the bar afterwards hands out the same slots, in the same order
+    before = dict(main._model_slot)
+    assert fable in {s.style for s in main.model_split_text(split, 48).spans}
+    assert main._model_slot == before
+    # the whole week, spend, a surface and a model folded into Other have no model hue
+    for label in ("week", "extra", "week · claude design", "week · haiku", "week · fa"):
+        assert main._calm_hue(label, hues) == main.BAR_HUE_TODAY
+    assert main._calm_hue("week · fable", {}) == main.BAR_HUE_TODAY
+
+
+def test_a_models_week_still_turns_orange_and_red_when_it_needs_attention():
+    blue = main.MODEL_SLOTS[0][0]
+    assert main._limit_bar(40, 10, calm=blue).spans[0].style == blue
+    assert main._limit_bar(40, 10, severity="normal", calm=blue).spans[0].style == blue
+    assert main._limit_bar(40, 10, severity="warning", calm=blue).spans[0].style == main.LIMIT_WARN
+    assert main._limit_bar(80, 10, calm=blue).spans[0].style == main.LIMIT_WARN
+    assert main._limit_bar(95, 10, calm=blue).spans[0].style == main.LIMIT_OVER
+    assert main._limit_bar(95, 10, severity="normal", calm=blue).spans[0].style == blue
+
+
+def test_the_weeks_use_by_surface_follows_the_bars():
+    rep = parse_report(ULTRA_REPLY, "ultra", now=1.0)
+    assert rep.surfaces == (("claude code", 98), ("chats", 1), ("cowork", 1))      # 0% is left out
+    lines = main.limits_text(rep, True, 48, now=1.0).plain.splitlines()
+    assert lines[-1] == "used in claude code 98% · chats 1% · cowork 1%"
+    # a reply without the breakdown, or with nothing used yet, has no such line
+    assert parse_report(REPLY, "", 1.0).surfaces == ()
+    assert not any("used in" in line for line in main.limits_text(parse_report(REPLY, "", 1.0), True, 48).plain.splitlines())
+    for odd in (None, "odd", {}, {"rows": "odd"}, {"rows": ["odd", {"percent": 5}, {"display_name": "x", "percent": 0},
+                                                            {"display_name": 3, "percent": 9}]}):
+        assert parse_report(dict(REPLY, seven_day_breakdown=odd), "", 1.0).surfaces == ()
+
+
+def test_many_surfaces_wrap_between_names_and_stay_in_the_panel():
+    many = (("claude code", 60), ("chats", 20), ("cowork", 10), ("other", 5), ("a surface name here", 5))
+    lines = main._surface_lines(many, 30)
+    assert lines == ["used in claude code 60%", "        chats 20% · cowork 10%", "        other 5%",
+                     "        a surface name here 5%"]
+    assert all(len(line) <= 30 for line in lines)
+
+
+def test_extra_share_comes_from_whichever_shape_the_reply_has():
+    def extra(**data):
+        rep = parse_report(dict({"seven_day": {"utilization": 1}}, **data), "", 1.0)
+        return next((w.used_pct for w in rep.windows if w.label == "extra"), None)
+    assert extra(extra_usage={"is_enabled": True, "utilization": 7.5}) == 7.5
+    assert extra(extra_usage={"is_enabled": True, "utilization": None}, spend={"percent": 12}) == 12
+    assert extra(extra_usage={"is_enabled": True, "used_credits": 2500.0, "monthly_limit": 10000}) == 25
+    assert extra(spend={"enabled": True, "percent": 9}) == 9
+    assert extra(extra_usage={"is_enabled": False, "utilization": 7.5}, spend={"enabled": True, "percent": 9}) is None
+    assert extra(spend={"enabled": False, "percent": 9}) is None
+    # on but with no limit to be a share of: Claude Code says "Unlimited"
+    assert extra(extra_usage={"is_enabled": True, "used_credits": 2500.0, "monthly_limit": None}) is None
+    assert extra(extra_usage={"is_enabled": True, "used_credits": 2500.0, "monthly_limit": 0}) is None
+    assert extra(extra_usage="odd", spend=["odd"]) is None
+
+
+def test_a_meter_this_version_has_not_heard_of_still_gets_a_bar():
+    now = datetime(2026, 11, 3, tzinfo=timezone.utc).timestamp()
+    rows = [{"kind": "monthly_all", "group": "monthly", "percent": 5, "resets_at": "2026-12-01T00:00:00Z"},
+            {"kind": "monthly_scoped", "group": "monthly", "percent": 6, "severity": 3,
+             "scope": {"surface": {"display_name": "Workbenches\x07Extended"}}},
+            {"percent": 7}, "odd", {"kind": "daily_all", "percent": True}]
+    rep = parse_report({"limits": rows}, "", now)
+    assert [w.label for w in rep.windows] == ["monthly", "monthly · workbenche"]
+    assert rep.windows[0].elapsed(now) is None and rep.windows[1].severity == ""     # no length, so no pace tick
+    lines = main.limits_text(rep, True, 48, now=now).plain.splitlines()
+    assert lines[1].endswith("28d 0h") and all(len(line) <= 48 for line in lines)
+
+
+def test_the_server_reading_colors_a_window_when_it_gives_one():
+    assert main._limit_bar(10, 10, severity="critical").spans[0].style == main.LIMIT_OVER
+    assert main._limit_bar(10, 10, severity="warning").spans[0].style == main.LIMIT_WARN
+    assert main._limit_bar(95, 10, severity="normal").spans[0].style == main.BAR_HUE_TODAY
+    assert main._limit_bar(95, 10, severity="new-word").spans[0].style == main.LIMIT_OVER
 
 
 def test_odd_replies_degrade_without_crashing():
@@ -56,6 +187,23 @@ def test_credentials_parse_milliseconds_and_reject_other_shapes():
     assert tok.value == TOKEN and tok.plan == "max" and 4102444700 < tok.expires_at < 4102444900
     assert limits._parse_credentials("{not json") is None
     assert limits._parse_credentials('{"claudeAiOauth": {"accessToken": 5}}') is None
+
+
+def test_plan_name_comes_from_the_profile_and_only_that_is_read(tmp_path, monkeypatch, caplog):
+    creds, config = tmp_path / ".credentials.json", tmp_path / ".claude.json"
+    creds.write_text(CREDS)
+    monkeypatch.setattr(limits, "CREDENTIALS_FILE", creds)
+    monkeypatch.setattr(limits, "GLOBAL_CONFIG", config)
+    assert limits.load_token()[0].plan == "max"                        # no file: the sign-in's type
+    config.write_text(json.dumps({"oauthAccount": {"planDisplayName": "Ultra", "emailAddress": "me@example.com"}}))
+    with caplog.at_level(logging.DEBUG, logger="agent_farm.limits"):
+        tok, why = limits.load_token()
+    assert (tok.plan, tok.value, why) == ("ultra", TOKEN, "")
+    assert "me@example.com" not in caplog.text and "Ultra" not in caplog.text
+    for odd in ("{not json", "[]", '{"oauthAccount": null}', '{"oauthAccount": {"planDisplayName": 7}}',
+                '{"oauthAccount": {"planDisplayName": ""}}'):
+        config.write_text(odd)
+        assert limits.load_token()[0].plan == "max"
 
 
 def test_token_goes_to_curl_on_stdin_never_in_argv(monkeypatch):
@@ -81,6 +229,7 @@ def test_credentials_file_is_preferred_over_the_keychain(tmp_path, monkeypatch):
     f = tmp_path / ".credentials.json"
     f.write_text(CREDS)
     monkeypatch.setattr(limits, "CREDENTIALS_FILE", f)
+    monkeypatch.setattr(limits, "GLOBAL_CONFIG", tmp_path / "absent.json")
 
     def no_keychain(*a, **k):
         raise AssertionError("security must not run")

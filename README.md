@@ -207,11 +207,16 @@ color. The "logged cost" line sums the cost checkpoints Claude Code writes at th
 each session, so today's sessions are not in it yet.
 
 **Plan limits.** With the setting on, a block above the days shows what `/usage` shows in
-Claude Code: one bar per rate-limit window (the current 5-hour session, the current week,
-and per-model weeks such as Fable on plans that have them) with the percent used and the
-time left until it resets. Green turns orange at 75% and red at 90%. A tick in each bar
-marks how far through its window the clock is, which is where an even pace would put you:
-a bar that stops short of the tick is using less than that, one that runs past it more.
+Claude Code: one bar per rate-limit window your plan has (the current week, per-model weeks
+such as Fable, a 5-hour session on plans that have one, and extra spend when it is on) with
+the percent used and the time left until it resets. Anthropic's reading of a window sets
+its color when the reply gives one; otherwise green turns orange at 75% and red at 90%. A
+tick in each bar marks how far through its window the clock is, which is where an even pace
+would put you: a bar that stops short of the tick is using less than that, one that runs
+past it more. Extra spend has no such clock and no tick. A model's week, such as Fable's,
+is drawn in the color that model has in the output-by-model bar below, until it turns
+orange or red. The last line says where the week's use went by surface (`used in claude
+code 98% · chats 1%`); those are shares of what you used, not of a limit.
 When a window has reset since the last reading, it says `reset` until the next fetch.
 Those numbers exist nowhere on disk, so
 agent-farm fetches them the way Claude Code does: it reads the Claude Code sign-in from
@@ -220,8 +225,10 @@ endpoint when you open the panel, then again as soon as a session or subagent ha
 since the last fetch, at most once every five minutes. While everyone is idle or waiting
 for you no request goes out and the header says paused, since the numbers cannot move. macOS may ask you to allow the Keychain
 read. The sign-in is used as is, never renewed, never written anywhere and never logged;
-when it has expired, the block says so until Claude Code renews it. The block is off by
-default and the app makes no network request of its own while it is off.
+when it has expired, the block says so until Claude Code renews it. The plan's name in the
+header comes from the profile Claude Code keeps in `~/.claude.json`, the only value taken
+from that file. The block is off by default and the app makes no network request of its own
+while it is off.
 
 **Agents at work.** Pinned to the bottom of the panel, one wheat stalk per clock hour for
 the last 24 hours, the current hour at the right. A stalk's height is how many agents

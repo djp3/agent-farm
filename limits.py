@@ -1,6 +1,7 @@
 """
-Plan limits: the rate-limit windows that Claude Code's /usage screen shows (the current
-5-hour session, the current 7-day week, and per-model weeks on plans that have them).
+Plan limits: the rate-limit windows that Claude Code's /usage screen shows. Which ones a
+plan has is up to the server: the current 7-day week, per-model weeks, a 5-hour session on
+plans that have one, and pay-as-you-go spend when it is on.
 
 Nothing about these windows lands on disk. Claude Code fetches them from Anthropic's OAuth
 usage endpoint with the sign-in token it keeps in the macOS Keychain, so this module does
@@ -10,12 +11,16 @@ the same fetch, read-only and opt-in (Settings → plan limits):
     logged or written anywhere, and it reaches curl on stdin so it never shows in `ps`
   • the request goes through the system curl so TLS uses the macOS trust store; the
     bundled Python only knows Homebrew's certificate path, which other Macs lack
-  • only percentages and reset times are kept from the reply; the body is never logged
+  • only percentages, reset times, surface names and the server's color reading are kept
+    from the reply; the body is never logged
+  • the panel names the plan from Claude Code's profile in ~/.claude.json; that file holds
+    much else, so this takes the one key and logs nothing from it
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -23,27 +28,37 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from collector import clean_text
+
 log = logging.getLogger("agent_farm.limits")
 
 SECURITY = "/usr/bin/security"
 CURL = "/usr/bin/curl"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
+GLOBAL_CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home())) / ".claude.json"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
 HTTP_TIMEOUT_S = 15
 KEYCHAIN_TIMEOUT_S = 120        # macOS may be showing the user an allow/deny dialog
 MIN_INTERVAL_S = 15             # a refresh sooner than this after a good one is skipped
 
-# Reply keys in display order with their panel labels and window lengths. Per-model weeks are
-# present only on plans that have them; "extra" is pay-as-you-go spend when the account has
-# it enabled, and has no clock. Model-scoped weeks such as Fable come from the reply's
-# "limits" list (see _scoped_windows). The reply gives only each window's reset time; the
-# lengths are the ones its keys name (five_hour, seven_day*), and scoped limits are weekly.
+# A reply describes its windows two ways, and a server may send either or both.
+# The older keys, in display order with their panel labels and window lengths. Per-model
+# weeks are present only on plans that have them, and a key the plan lacks is null (Ultra has
+# no five_hour). The reply gives only each window's reset time; the lengths are the ones the
+# keys name, and scoped limits are weekly.
 SESSION_S, WEEK_S = 5 * 3600, 7 * 86400
 WINDOWS = (("five_hour", "session", SESSION_S), ("seven_day", "week", WEEK_S),
            ("seven_day_opus", "week · opus", WEEK_S), ("seven_day_sonnet", "week · sonnet", WEEK_S))
-EXTRA_KEY, EXTRA_LABEL = "extra_usage", "extra"
+# The newer "limits" rows, classified by kind: the server's own list of the meters a plan has,
+# so they win over a key for the same window. A kind not named here still gets a bar, labeled
+# from its group, with no pace tick since its length is unknown.
+KINDS = {"session": ("session", SESSION_S), "weekly_all": ("week", WEEK_S), "weekly_scoped": ("week", WEEK_S)}
+LABEL_MAX = 20                  # a label from the server must leave room for its bar
+# Pay-as-you-go spend, which has no clock. "extra_usage" has the switch; newer replies leave
+# its utilization null and give the share in "spend".
+EXTRA_KEY, EXTRA_LABEL, SPEND_KEY = "extra_usage", "extra", "spend"
 EXPIRED = "sign-in expired; open Claude Code to refresh it"
 
 
@@ -53,7 +68,8 @@ class Window:
     label: str
     used_pct: float                 # 0..100, as the API reports it
     resets_at: datetime | None      # timezone-aware, or None when the API gives none
-    span_s: float = 0.0             # window length in seconds; 0 = no clock (extra spend)
+    span_s: float = 0.0             # window length in seconds; 0 = no clock or an unknown length
+    severity: str = ""              # the server's reading for the bar's color, when it gives one
 
     def elapsed(self, now: float) -> float | None:
         """How far through its window the clock is, 0..1, taking the window to end at
@@ -69,9 +85,10 @@ class Window:
 @dataclass(frozen=True)
 class LimitsReport:
     windows: tuple[Window, ...] = ()
-    plan: str = ""                  # subscription type from the sign-in, e.g. "max"
+    plan: str = ""                  # the plan's name, e.g. "ultra"
     fetched_at: float = 0.0         # time.time() of the last successful fetch, 0 = never
     error: str = ""                 # short, user-facing; set when the last refresh failed
+    surfaces: tuple[tuple[str, float], ...] = ()    # (name, share of the week's use), largest first
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,16 @@ def _parse_credentials(blob: str) -> _Token | None:
     if expires > 1e11:              # Claude Code stores milliseconds
         expires /= 1000.0
     return _Token(oauth["accessToken"], expires, str(oauth.get("subscriptionType") or ""))
+
+
+def _plan_name(fallback: str) -> str:
+    """The plan's name from the profile Claude Code keeps ("Ultra"). The sign-in only knows
+    the subscription type it was issued under, which stays "max" for a renamed plan."""
+    try:
+        name = json.loads(GLOBAL_CONFIG.read_text())["oauthAccount"]["planDisplayName"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return fallback
+    return clean_text(name).lower() if isinstance(name, str) and name else fallback
 
 
 def load_token() -> tuple[_Token | None, str]:
@@ -124,7 +151,7 @@ def load_token() -> tuple[_Token | None, str]:
     tok = _parse_credentials(blob)
     if tok is None:
         return None, f"unexpected {source} format"
-    return tok, ""
+    return replace(tok, plan=_plan_name(tok.plan)), ""
 
 
 def fetch_usage(token: str) -> tuple[dict | None, str]:
@@ -178,43 +205,87 @@ def _scope_name(scope) -> str:
     return ""
 
 
-def _scoped_windows(rows, taken: set[str]) -> list[Window]:
-    """Weekly limits scoped to one model or surface, from the reply's newer "limits" list
-    (where the Fable week lives). A scope already shown from a seven_day_* key is skipped."""
+def _pct(value) -> float | None:
+    """A percentage from the reply held to 0..100, or None when it is not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0.0, min(100.0, float(value)))
+
+
+def _key_windows(data: dict) -> list[Window]:
+    """The windows the reply's older top-level keys describe."""
     out: list[Window] = []
-    if not isinstance(rows, list):
-        return out
-    for r in rows:
-        if not isinstance(r, dict) or r.get("kind") != "weekly_scoped":
-            continue
-        name = _scope_name(r.get("scope"))
-        pct = r.get("percent")
-        if not name or not isinstance(pct, (int, float)):
-            continue
-        label = f"week · {name.lower()}"
-        if label in taken:
-            continue
-        taken.add(label)
-        out.append(Window(f"scoped:{name}", label, max(0.0, min(100.0, float(pct))),
-                          _parse_ts(r.get("resets_at")), WEEK_S))
+    for key, label, span in WINDOWS:
+        w = data.get(key)
+        pct = _pct(w.get("utilization")) if isinstance(w, dict) else None
+        if pct is not None:
+            out.append(Window(key, label, pct, _parse_ts(w.get("resets_at")), span))
     return out
 
 
-def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
-    wins: list[Window] = []
-    for key, label, span in WINDOWS:
-        w = data.get(key)
-        if not isinstance(w, dict) or not isinstance(w.get("utilization"), (int, float)):
+def _surfaces(block) -> tuple[tuple[str, float], ...]:
+    """Where the week's use went, in the server's order, from "seven_day_breakdown". These
+    are shares of what was used (they add up to 100), not of a limit. 0% is left out."""
+    rows = block.get("rows") if isinstance(block, dict) else None
+    out: list[tuple[str, float]] = []
+    for r in rows if isinstance(rows, list) else ():
+        if isinstance(r, dict) and isinstance(r.get("display_name"), str) and _pct(r.get("percent")):
+            out.append((clean_text(r["display_name"]).lower()[:LABEL_MAX], _pct(r["percent"])))
+    return tuple(out)
+
+
+def _row_windows(rows) -> list[Window]:
+    """The windows in the reply's "limits" list, in the server's order, one bar per label."""
+    out: dict[str, Window] = {}
+    if not isinstance(rows, list):
+        return []
+    for r in rows:
+        pct = _pct(r.get("percent")) if isinstance(r, dict) else None
+        if pct is None:
             continue
-        pct = max(0.0, min(100.0, float(w["utilization"])))
-        wins.append(Window(key, label, pct, _parse_ts(w.get("resets_at")), span))
-    wins.extend(_scoped_windows(data.get("limits"), {w.label for w in wins}))
-    extra = data.get(EXTRA_KEY)
-    if isinstance(extra, dict) and extra.get("is_enabled") and isinstance(extra.get("utilization"), (int, float)):
-        wins.append(Window(EXTRA_KEY, EXTRA_LABEL, max(0.0, min(100.0, float(extra["utilization"]))), None))
+        kind, group = str(r.get("kind") or ""), str(r.get("group") or "")
+        name = _scope_name(r.get("scope"))
+        label, span = KINDS.get(kind, (group or kind, 0.0))
+        if not label or (kind == "weekly_scoped" and not name):
+            continue
+        label = clean_text(f"{label} · {name.lower()}" if name else label)[:LABEL_MAX]
+        severity = r.get("severity")
+        out.setdefault(label, Window(f"{kind}:{name}", label, pct, _parse_ts(r.get("resets_at")), span,
+                                     severity if isinstance(severity, str) else ""))
+    return list(out.values())
+
+
+def _extra_window(data: dict) -> Window | None:
+    """Pay-as-you-go spend when the account has it on and a share of a limit can be told:
+    an unlimited account has none."""
+    extra, spend = data.get(EXTRA_KEY), data.get(SPEND_KEY)
+    extra = extra if isinstance(extra, dict) else {}
+    spend = spend if isinstance(spend, dict) else {}
+    if not extra.get("is_enabled", spend.get("enabled")):
+        return None
+    pct = _pct(spend.get("percent"))
+    if pct is None:
+        pct = _pct(extra.get("utilization"))
+    if pct is None:
+        used, cap = extra.get("used_credits"), extra.get("monthly_limit")           # both in cents
+        if _pct(used) is None or _pct(cap) is None or cap <= 0:
+            return None
+        pct = _pct(used / cap * 100)
+    severity = spend.get("severity")
+    return Window(EXTRA_KEY, EXTRA_LABEL, pct, None, severity=severity if isinstance(severity, str) else "")
+
+
+def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
+    rows = _row_windows(data.get("limits"))
+    shown = {w.label for w in rows}
+    wins = [w for w in _key_windows(data) if w.label not in shown] + rows
+    wins.sort(key=lambda w: {"session": 0, "week": 1}.get(w.label, 2))      # the rest keep their order
+    extra = _extra_window(data)
+    if extra is not None:
+        wins.append(extra)
     if not wins:
         return LimitsReport((), plan, now, "no limit windows in the reply")
-    return LimitsReport(tuple(wins), plan, now, "")
+    return LimitsReport(tuple(wins), plan, now, "", _surfaces(data.get("seven_day_breakdown")))
 
 
 class PlanLimits:
