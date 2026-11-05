@@ -42,10 +42,11 @@ Under the title bar, two columns. On the left, from top to bottom:
 - **The detail pane**: everything known about the selected row.
 - **The expiring pane**: the sessions Claude Code will delete next, each with a keep button.
 
-On the right, **the usage panel** (hidden until you press `u`), down the full height of the
-window: your token usage per day and per model, and at the bottom how many agents were at
-work in each of the last 24 hours, as tall as the expiring pane beside it. With the panel
-hidden the left column takes the whole width.
+On the right, **the usage panel**, down the full height of the window: your token usage per
+day and per model (press `u`), how the week's limit was spent across your projects (press
+`p`), and at the bottom how many agents were at work in each of the last 24 hours, as tall as
+the expiring pane beside it. With both graphs hidden the panel closes and the left column
+takes the whole width.
 
 The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
 Dock, Mission Control and the window switcher show whether the farm needs you.
@@ -60,8 +61,9 @@ Dock, Mission Control and the window switcher show whether the farm needs you.
 | k | in the expiring pane: keep the selected session another 30 days |
 | f | bring that session forward: its iTerm2 tab, or the Claude desktop app |
 | d | show / hide the detail pane (it hides itself when the window is short) |
-| u | show / hide the usage panel |
-| m | cycle the usage measure: output tokens, input tokens incl. cache, API messages |
+| u | show / hide the usage graph |
+| p | show / hide the project graph (with both graphs hidden the right column closes) |
+| m | cycle the usage measure: estimated limit use, output tokens, input tokens incl. cache, API messages |
 | s | settings (esc returns) |
 | r | refresh now |
 | q | quit |
@@ -186,7 +188,8 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
 
 - **Show status text in rows** (off): puts the state word and its age into every row, for
   readers who cannot rely on the glyph color.
-- **Usage panel open at launch** (off).
+- **Usage graph open at launch** (off).
+- **Project graph open at launch** (off).
 - **Align activity text** (on): pad names to a fixed column so the activity text lines up.
 - **Plan limits in the usage panel** (off): the `/usage` windows, fetched with your Claude
   Code sign-in. See the usage panel section for what that involves.
@@ -201,7 +204,14 @@ width lives only there.
 One bar per local day for the last 14 days, labelled by weekday, aggregated from every
 transcript under `~/.claude/projects`, subagents included. The measure is named in the
 title and over the value column; `m` cycles it. Today's bar is drawn at full green and the
-rest dimmed. Beneath the days a stacked bar splits output tokens by model, with a legend;
+rest dimmed. The 14 days span three limit weeks: this week's days are solid (the days the
+`week` bar counts), last week's are a dense shade (`▓`) and the week before's cross-hatched
+(`╳`). The first measure, estimated limit use, gives each day's tokens the weights the
+project graph uses and shows them as a percent of your weekly limit, so the days since the
+week began add up to Claude Code's part of the `week` bar (chats and Cowork are the rest).
+No raw count does that: cache reads are almost all the tokens but are cheap, and output is
+under one percent of the tokens but a sixth of the weight. With plan limits off it shows
+each day's share of the 14 days instead. Beneath the days a stacked bar splits output tokens by model, with a legend;
 each model keeps its color and texture for the life of the app, so the stack reads without
 color. The "logged cost" line sums the cost checkpoints Claude Code writes at the end of
 each session, so today's sessions are not in it yet.
@@ -213,9 +223,10 @@ the percent used and the time left until it resets. Anthropic's reading of a win
 its color when the reply gives one; otherwise green turns orange at 75% and red at 90%. A
 tick in each bar marks how far through its window the clock is, which is where an even pace
 would put you: a bar that stops short of the tick is using less than that, one that runs
-past it more. Extra spend has no such clock and no tick. A model's week, such as Fable's,
-is drawn in the color that model has in the output-by-model bar below, until it turns
-orange or red. The last line says where the week's use went by surface (`used in claude
+past it more. Extra spend has no such clock and no tick. The `week` bar is split by model
+in the colors and textures of the output-by-model bar below, estimated the way the project
+graph is, with chats and Cowork in gray at its end. A model's week, such as Fable's, is drawn
+in that model's color. Either turns orange or red as a whole when it needs attention. The last line says where the week's use went by surface (`used in claude
 code 98% · chats 1%`); those are shares of what you used, not of a limit.
 When a window has reset since the last reading, it says `reset` until the next fetch.
 Those numbers exist nowhere on disk, so
@@ -229,6 +240,22 @@ when it has expired, the block says so until Claude Code renews it. The plan's n
 header comes from the profile Claude Code keeps in `~/.claude.json`, the only value taken
 from that file. The block is off by default and the app makes no network request of its own
 while it is off.
+
+**Projects.** Press `p` for how the week's percent was spent, on its own or below the usage
+graph: one row per GitHub repo, largest first, with the five largest named. The rows add up
+to the `week` bar, so with the week at 34% a project at 27% used most of it. Chats and Cowork
+have no folder, so each gets a row of its own. A worktree counts toward its repo and two
+clones of a repo count as one. A folder outside any repo counts toward the folder its session
+started in. Each message counts toward the folder it ran in, so agents working in the same
+repo add up, and an agent that moves between repos is split between them. Bars take the
+model colors from the output-by-model bar. To name a repo agent-farm reads the origin remote
+from its `.git/config` and keeps only the owner and repo.
+
+The split is an estimate. Anthropic reports the week's total and its shares by surface but
+not by project, so agent-farm divides Claude Code's share by what each message's tokens are
+worth relative to the others, using the list rates of its model. No money is shown. With
+plan limits off, or for a moment after the week resets, the rows are percents of the last 7
+days' use instead.
 
 **Agents at work.** Pinned to the bottom of the panel, one wheat stalk per clock hour for
 the last 24 hours, the current hour at the right. A stalk's height is how many agents

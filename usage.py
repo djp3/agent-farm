@@ -10,7 +10,11 @@ buckets per local day:
 
 Claude Code writes one transcript row per content block of an API message, each
 carrying the *same* usage object, so usage is counted once per message id.
-No prices are hard-coded here: cost comes only from Claude Code's cost-state rows.
+The cost figures come only from Claude Code's cost-state rows.
+
+It also buckets each message by hour, project and model (see projects.py), weighted by what
+its tokens are worth relative to other tokens. Those weights only ever split the week's
+limit across projects, and they never reach the screen as money.
 
 It also keeps, for the last day, when each session and subagent was running: from one
 user or assistant row to the next, unless the row ended the turn (stop reason end_turn,
@@ -33,6 +37,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from projects import Projects
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -61,6 +67,27 @@ _NOTICE_TOOL = re.compile(rb"<tool-use-id>([^<]+)</tool-use-id>")
 _NOTICE_STATUS = re.compile(rb"<status>([a-z_]+)</status>")
 RECENT_COMMANDS = 50                # foreground commands remembered, in case one is backgrounded
 LAUNCH_MATCH_S = 60                 # a shell starting this soon after a launch row is that launch's
+
+
+# Relative worth of a model's tokens (input, output, cache read), first matching prefix wins.
+# These are Anthropic's list rates per million, checked against the costs Claude Code records.
+# Haiku 5.5 is at its rate for prompts over 100K tokens, which is what Claude Code's are.
+MODEL_WEIGHTS = (("fable-5-1", 10, 50, 0.25), ("fable", 10, 50, 1), ("opus-5-5", 4, 20, 0.2), ("opus", 5, 25, 0.5),
+                 ("sonnet-5", 2, 10, 0.2), ("sonnet", 3, 15, 0.3), ("haiku-5", 0.5, 2.5, 0.05), ("haiku", 1, 5, 0.1))
+UNKNOWN_MODEL_WEIGHTS = (5, 25, 0.5)
+CACHE_WRITE_5M, CACHE_WRITE_1H = 1.25, 2.0      # a cache write, in terms of the model's input
+
+
+def message_weight(model: str, usage: dict) -> float:
+    """What a message's tokens are worth, for comparing one message with another."""
+    inp, out, read = next((m[1:] for m in MODEL_WEIGHTS if model.startswith(m[0])), UNKNOWN_MODEL_WEIGHTS)
+    writes = int(usage.get("cache_creation_input_tokens") or 0)
+    split = usage.get("cache_creation")
+    hour_writes = int(split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+    hour_writes = min(writes, hour_writes)
+    return (int(usage.get("input_tokens") or 0) * inp + int(usage.get("output_tokens") or 0) * out +
+            int(usage.get("cache_read_input_tokens") or 0) * read +
+            ((writes - hour_writes) * CACHE_WRITE_5M + hour_writes * CACHE_WRITE_1H) * inp)
 
 
 def _epoch(ts: Optional[str]) -> float:
@@ -99,6 +126,7 @@ class DayUsage:
     in_tokens: int = 0              # input + cache_read + cache_creation
     messages: int = 0
     cost_usd: float = 0.0
+    weight: float = 0.0             # what its messages were worth (message_weight), for limit use
     sessions: set = field(default_factory=set)
     out_by_model: Counter = field(default_factory=Counter)
 
@@ -117,6 +145,8 @@ class _FileState:
     last_ts: str = ""
     last_cost: float = 0.0           # last cost-state total seen, for deltas
     session_id: str = ""
+    cwd: str = ""                    # the folder its last row ran in
+    launch: str = ""                 # the folder its first row ran in
     act_last: float = 0.0            # time of the last user/assistant row
     act_ended: bool = True           # that row ended the turn (or there was none)
     spans: list = field(default_factory=list)    # [start, end] running, sorted and merged, last day only
@@ -131,6 +161,9 @@ class UsageScanner:
         # iterate a Counter the scanner is adding a key to.
         self.days: dict[str, DayUsage] = {}
         self._published: dict[str, DayUsage] = {}
+        self._hours: dict[int, Counter] = {}    # epoch hour -> (project, model) -> weight
+        self._published_hours: dict[int, Counter] = {}
+        self._projects = Projects()
         self._publish_lock = threading.Lock()
         self._files: dict[str, _FileState] = {}
         # per transcript: (session id, running spans, open turn's last row or None, open shells' launches)
@@ -189,6 +222,9 @@ class UsageScanner:
         """Replace the readable snapshot with independent copies of the working tallies."""
         frozen = {date: replace(d, sessions=set(d.sessions), out_by_model=Counter(d.out_by_model))
                   for date, d in self.days.items()}
+        oldest = int(time.time() // 3600) - WINDOW_DAYS * 24
+        self._hours = {h: c for h, c in self._hours.items() if h >= oldest}
+        hours = {h: Counter(c) for h, c in self._hours.items()}
         activity = []
         for st in self._files.values():
             spans = [(a, b) for a, b in st.spans if b > self._horizon]
@@ -197,6 +233,7 @@ class UsageScanner:
                 activity.append((st.session_id, spans, tail, list(st.shells.values())))
         with self._publish_lock:
             self._published = frozen
+            self._published_hours = hours
             self._published_activity = activity
 
     def report(self, n_days: int = 14) -> list[DayUsage]:
@@ -248,6 +285,19 @@ class UsageScanner:
         for d in self.report(n_days):
             c.update(d.out_by_model)
         return c.most_common()
+
+    def project_split(self, since: float) -> dict[str, Counter]:
+        """Each project's weight per model from the hour holding `since` on, from the snapshot
+        published by the last completed scan."""
+        with self._publish_lock:
+            hours = self._published_hours
+        out: dict[str, Counter] = {}
+        first = int(since // 3600)
+        for hour, tally in hours.items():
+            if hour >= first:
+                for (project, model), weight in tally.items():
+                    out.setdefault(project, Counter())[model] += weight
+        return out
 
     # ---- internals -----------------------------------------------------------
     def _day(self, date: str) -> DayUsage:
@@ -359,6 +409,9 @@ class UsageScanner:
                 st.last_ts = row["timestamp"]
             if row.get("sessionId"):
                 st.session_id = row["sessionId"]
+            if row.get("cwd") and isinstance(row["cwd"], str):
+                st.cwd = row["cwd"]
+                st.launch = st.launch or st.cwd
             if t == "assistant":
                 msg = row.get("message") or {}
                 if isinstance(msg, dict):              # every block row, before the dedupe below
@@ -384,8 +437,14 @@ class UsageScanner:
                 d.messages += 1
                 model = (msg.get("model") or "?").replace("claude-", "")
                 d.out_by_model[model] += out
+                worth = message_weight(model, usage)
+                d.weight += worth
                 if st.session_id:
                     d.sessions.add(st.session_id)
+                at = _epoch(ts)
+                if at and st.cwd:
+                    tally = self._hours.setdefault(int(at // 3600), Counter())
+                    tally[(self._projects.key(st.cwd, st.launch), model)] += worth
                 changed = True
             elif t == "cost-state":
                 try:

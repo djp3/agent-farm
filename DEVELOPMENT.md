@@ -13,6 +13,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 | `main.py` | the Textual app: tree, detail pane, expiring pane, fleet line, usage panel, settings screen |
 | `collector.py` | the passive data layer: registry, transcripts, subagents, the shells under each session, git, `it2`; `python collector.py` prints a one-shot dump |
 | `usage.py` | incremental transcript scanner behind the usage panel: daily tokens and cost, and when each agent was running over the last day, background commands included |
+| `projects.py` | which project a folder belongs to: its git repo (worktrees merged, clones merged by origin), else the folder its session started in |
 | `expiring.py` | the sessions Claude Code's 30-day cleanup deletes next (by file modification time, as Claude Code judges them), and keep: the app's one write, which sets those times to now |
 | `limits.py` | plan limits (the `/usage` windows) from Anthropic's OAuth usage endpoint, with the Claude Code sign-in from the Keychain; reads both reply shapes (the `limits` rows and the older keys); opt-in, via system `curl` |
 | `ordering.py` | the orderings; an `Ordering` is a tuple of `Tier`s, each with a `match` predicate and a sort `key`; add one and append it to `ORDERINGS` |

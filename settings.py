@@ -25,7 +25,8 @@ LEGACY_PATH = data_dir() / "monitor_settings.json"     # the name before the pro
 class Settings:
     show_status_text: bool = False      # status word + age in rows (colorblind aid); color otherwise
     ordering: str = "attention"         # default instance ordering at launch
-    show_usage: bool = False            # usage panel open at launch
+    show_usage: bool = False            # usage graph open at launch
+    show_projects: bool = False         # project graph open at launch
     align_columns: bool = True          # pad names to a fixed column so activity text lines up
     show_limits: bool = False           # plan limits (/usage) in the usage panel; reads the Keychain sign-in
     show_expiring: bool = True          # the expiring pane: sessions Claude Code deletes next, with keep

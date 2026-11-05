@@ -20,6 +20,7 @@ import shlex
 import signal
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import groupby
@@ -29,7 +30,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import Screen
@@ -38,15 +39,16 @@ from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Stati
                              Tree)
 from textual.widgets.tree import TreeNode
 
-from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, Shell, fmt_age,
-                       fmt_tokens, setup_logging)
+from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, Shell, clean_text,
+                       fmt_age, fmt_tokens, setup_logging)
 from apppaths import app_version
 from expiring import DAY, DEFAULT_PERIOD_DAYS, Expiring, ExpiryScanner
 from expiring import WINDOW_DAYS as EXPIRY_DAYS
-from limits import LimitsReport, PlanLimits
+from limits import WEEK_S, LimitsReport, PlanLimits, Window
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
+from projects import project_label
 from settings import Settings
-from usage import WINDOW_DAYS, UsageScanner, fmt_count
+from usage import WINDOW_DAYS, DayUsage, UsageScanner, fmt_count
 
 log = logging.getLogger("agent_farm.app")
 VERSION = app_version()       # from the Mac app's environment, or the VERSION file in a checkout
@@ -67,7 +69,8 @@ WINDOW_TITLE = "🌾 agent-farm"
 CHICKEN = "🐓"
 GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
 USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
-USAGE_METRICS = [       # (attribute on DayUsage, label, column header)
+USAGE_METRICS = [       # (attribute on DayUsage, label, column header); the first is the default
+    ("weight", "est. % of weekly limit", "%"),
     ("out_tokens", "output tokens", "out"),
     ("in_tokens", "input tokens incl. cache", "in"),
     ("messages", "API messages", "msgs"),
@@ -128,6 +131,127 @@ def model_split_text(split: list[tuple[str, int]], width: int) -> Text:
         line_len += 1 + len(item)
     t.append("\n")
     return t
+
+# The project graph: how the week's percent was spent, one row per repo, largest first. Bars
+# are drawn on the scale of the week's percent, so together they fill the width.
+PROJECT_ROWS = 5                          # named rows; the rest fold into one
+PROJECT_LABEL_W = 16
+SURFACE_BAR = (MODEL_OTHER[0], "█")       # chats and cowork: no model is known for them
+CLAUDE_CODE_SURFACE = "claude code"
+
+
+def _stacked(parts: list[tuple[str, str, float]], width: int) -> list[tuple[str, str]]:
+    """Stacked (hue, glyph, cells) on one row as (character, hue) per cell: whole cells of each
+    part's texture, then what is left over as a partial block. Anything above zero shows at
+    least the thinnest one."""
+    out: list[tuple[str, str]] = []
+    end, hue = 0.0, ""
+    for hue, glyph, cells in parts:
+        end += cells
+        out += [(glyph, hue)] * (min(width, int(end)) - len(out))
+    eighth = int(round((end - len(out)) * 8))
+    if end > 0 and len(out) < width and (eighth or not out):
+        out.append((BAR_EIGHTHS[max(1, eighth)], hue))
+    return out
+
+
+def _stack_cells(parts: list[tuple[str, str, float]], width: int) -> Text:
+    t = Text()
+    for hue, run in groupby(_stacked(parts, width), key=lambda c: c[1]):
+        t.append("".join(ch for ch, _ in run), style=hue)
+    t.append(" " * (width - t.cell_len))
+    return t
+
+
+def _project_value(pct: float) -> str:
+    return "<0.1%" if 0 < pct < 0.05 else f"{pct:.1f}%"
+
+
+def _current_week(rep: LimitsReport | None, enabled: bool, now: float) -> Window | None:
+    """The whole-week window, unless it has reset since the reading (its percent is then old)."""
+    week = next((w for w in rep.windows if w.label == "week"), None) if rep and enabled else None
+    return week if week and week.resets_at and week.resets_at.timestamp() > now else None
+
+
+def _week_split(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool, now: float):
+    """What the week's percent is made of, as the project graph and the limit-use measure see it:
+    (the current week or None, its percent, the other surfaces' (name, percent), Claude Code's
+    part of the percent, each project's weight per model since the week began, their sum).
+    Without a current week it is the last 7 days, with 100 for the percent."""
+    week = _current_week(rep, enabled, now)
+    total = week.used_pct if week else 100.0
+    split = scanner.project_split((week.resets_at.timestamp() if week else now) - WEEK_S)
+    surfaces = [(n, p) for n, p in rep.surfaces if n != CLAUDE_CODE_SURFACE] if week else []
+    code_pct = total * max(0.0, 100.0 - sum(p for _, p in surfaces)) / 100.0
+    return week, total, surfaces, code_pct, split, sum(sum(c.values()) for c in split.values())
+
+
+def _model_look(models: list[tuple[str, int]]):
+    """(hue, glyph) of a model as the output-by-model bar draws it, and a sort key for its order
+    there. A model the bar folds into Other is drawn as Other, and gets no slot of its own."""
+    named = model_hues(models)
+    order = {m: i for i, (m, _) in enumerate(models)}
+    return (lambda m: model_slot(m) if m in named else MODEL_OTHER), (lambda m: order.get(m, len(order)))
+
+
+def week_parts(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool,
+               now: float | None = None) -> list[tuple[str, str, float]]:
+    """The week bar's fill by model, as (hue, glyph, share of the fill): Claude Code's part split
+    the way the project graph splits it, then chats and Cowork in gray, which have no model.
+    Empty without a current week or any use in it."""
+    now = time.time() if now is None else now
+    week, total, surfaces, code_pct, split, worth = _week_split(scanner, rep, enabled, now)
+    if not week or not worth or total <= 0:
+        return []
+    by_model: Counter = sum(split.values(), Counter())
+    look, order = _model_look([(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0])
+    parts = [(*look(m), code_pct / total * n / worth) for m, n in sorted(by_model.items(), key=lambda kv: order(kv[0]))]
+    other = sum(p for _, p in surfaces) / 100.0
+    return parts + ([(*SURFACE_BAR, other)] if other else [])
+
+
+def projects_text(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool, width: int,
+                  now: float | None = None) -> Text:
+    """How the week's percent was spent: Claude Code's part split across projects by what their
+    messages were worth, and each other surface on its own row, since those have no folder.
+    The rows add up to the week's percent. Without a current reading of the week (plan limits
+    off, or just reset) it shows each project's percent of the last 7 days' use instead."""
+    now = time.time() if now is None else now
+    t = Text()
+    week, total, surfaces, code_pct, split, worth = _week_split(scanner, rep, enabled, now)
+    head = f"Projects · week {int(total)}% · estimated" if week else "Projects · last 7 days · % of use"
+    t.append(head + "\n", style="bold")
+    if not scanner.scanned_once:
+        t.append("scanning transcripts…\n", style="dim")
+        return t
+    if total <= 0 or (not worth and not surfaces):
+        t.append("nothing used yet\n", style="dim")
+        return t
+    projects = sorted(split.items(), key=lambda kv: -sum(kv[1].values()))
+    shown = projects if len(projects) <= PROJECT_ROWS + 1 else projects[:PROJECT_ROWS]
+    # (label, model weights or None for a surface, percent)
+    rows = [(project_label(k), c, code_pct * sum(c.values()) / worth) for k, c in shown]
+    if len(shown) < len(projects):
+        rest = sum((c for _, c in projects[len(shown):]), Counter())
+        rows.append((f"{len(projects) - len(shown)} more projects", rest, code_pct * sum(rest.values()) / worth))
+    rows += [(n, None, total * p / 100.0) for n, p in surfaces]
+    labels = [" ".join(clean_text(r[0]).split()) for r in rows]
+    label_w = min(PROJECT_LABEL_W, max(len(s) for s in labels))
+    bar_w = max(6, width - label_w - 1 - 1 - 5)
+    # the models keep their order and look from the output-by-model bar, which names only a few
+    look, order = _model_look([(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0])
+    for label, (_, parts, pct) in zip(labels, rows):
+        t.append(f"{(label[:label_w - 1] + '…') if len(label) > label_w else label:<{label_w}} ", style="dim")
+        cells = pct * bar_w / total
+        if parts is None:
+            bars = [(*SURFACE_BAR, cells)]
+        else:
+            size = sum(parts.values()) or 1.0
+            bars = [(*look(m), cells * n / size) for m, n in sorted(parts.items(), key=lambda kv: order(kv[0]))]
+        t.append_text(_stack_cells(bars, bar_w))
+        t.append(f" {_project_value(pct):>5}\n")
+    return t
+
 
 # Row colors. A row's icon says its state, and its name whether it is yours to talk to:
 # white for a session you can give input to (waiting for you, or idle), otherwise the
@@ -670,19 +794,25 @@ def _calm_hue(label: str, hues: dict[str, str]) -> str:
 
 
 def _limit_bar(pct: float, width: int, elapsed: float | None = None, severity: str = "",
-               calm: str = BAR_HUE_TODAY) -> Text:
+               calm: str = BAR_HUE_TODAY, parts: list[tuple[str, str, float]] | None = None) -> Text:
     """A budget bar: the used share in its hue (_limit_hue) over a dim track so the unused
-    share stays visible (the percent beside it says the same).
+    share stays visible (the percent beside it says the same). With `parts` ((hue, glyph,
+    share of the fill), as the output-by-model bar draws models) a bar that needs no attention
+    is split between them; one that does is drawn whole in orange or red.
     `elapsed` (0..1, how far through its window the clock is) adds a tick where an even
     pace would be: fill that stops short of the tick is under pace, fill past it is ahead.
     Over the fill the tick is a notch, over the track a bright line."""
     hue = _limit_hue(pct, severity, calm)
-    filled = _bar(pct / 100, width).rstrip()
-    cells = [(ch, hue) for ch in filled] + [("·", "dim")] * (width - len(filled))
+    fill = max(0.0, min(1.0, pct / 100)) * width
+    if parts and hue == calm:
+        filled = _stacked([(h, g, share * fill) for h, g, share in parts], width)
+    else:
+        filled = [(ch, hue) for ch in _bar(pct / 100, width).rstrip()]
+    cells = filled + [("·", "dim")] * (width - len(filled))
     if elapsed is not None and width > 0:
         i = min(width - 1, int(elapsed * width))
-        whole = int(max(0.0, min(1.0, pct / 100)) * width)          # cells filled edge to edge
-        cells[i] = (PACE_TICK, Style(color=PACE_TICK_NOTCH, bgcolor=Style.parse(hue).color)
+        whole = int(fill)                                            # cells filled edge to edge
+        cells[i] = (PACE_TICK, Style(color=PACE_TICK_NOTCH, bgcolor=Style.parse(cells[i][1]).color)
                     if i < whole else PACE_TICK_ON_TRACK)
     t = Text()
     for style, run in groupby(cells, key=lambda c: c[1]):
@@ -724,7 +854,8 @@ def fmt_countdown(at: datetime | None, now: float) -> str:
 
 
 def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float | None = None,
-                polling: bool = True, hues: dict[str, str] | None = None) -> Text:
+                polling: bool = True, hues: dict[str, str] | None = None,
+                week_parts: list[tuple[str, str, float]] | None = None) -> Text:
     """The plan-limit block of the usage panel: what /usage shows in Claude Code, one bar per
     window. Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
     Not polling (nothing has worked since the last fetch): the age keeps growing, so the
@@ -754,7 +885,8 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     bar_w = max(8, width - label_w - 1 - 1 - 4 - 2 - reset_w)
     for w in rep.windows:
         t.append(f"{w.label:<{label_w}} ", style="dim")
-        t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now), w.severity, _calm_hue(w.label, hues or {})))
+        t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now), w.severity, _calm_hue(w.label, hues or {}),
+                                 week_parts if w.label == "week" else None))
         calm = _limit_hue(w.used_pct, w.severity) == BAR_HUE_TODAY
         t.append(f" {int(w.used_pct):>3}%", style="" if calm else "bold")
         left = fmt_countdown(w.resets_at, now)
@@ -1130,9 +1262,34 @@ class ExpiringPane(Widget, can_focus=True):
         self.post_message(self.Highlighted())
 
 
+# The daily graph spans three limit weeks: this one solid, the one before a dense shade, and
+# the one before that cross-hatched, so the denser the fill the closer the week.
+HATCHES = {1: ("▓", "last week"), 2: ("╳", "two weeks ago")}
+
+
+def _hatched_bar(frac: float, width: int, glyph: str) -> str:
+    """A bar in whole hatched cells; anything above zero gets at least one."""
+    cells = max(1, round(min(1.0, frac) * width)) if frac > 0 else 0
+    return (glyph * cells).ljust(width)
+
+
 def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
-               limits: LimitsReport | None = None, limits_on: bool = False, polling: bool = True) -> Text:
+               limits: LimitsReport | None = None, limits_on: bool = False, polling: bool = True,
+               now: float | None = None) -> Text:
     key, label, col = USAGE_METRICS[metric_idx % len(USAGE_METRICS)]
+    now = time.time() if now is None else now
+    # Days of earlier limit weeks are hatched, whatever the measure.
+    current = _current_week(limits, limits_on, now)
+    week_start = current.resets_at.timestamp() - WEEK_S if current else None
+    # Limit use: each day's weight on the scale the week's percent puts on the weight since the
+    # week began, so the days since then add up to Claude Code's part of the week. Without a
+    # current week: each day's share of the 14 days.
+    scale = None
+    if key == "weight":
+        week, _, _, code_pct, _, worth = _week_split(scanner, limits, limits_on, now)
+        scale = code_pct / worth if week and worth else None
+        if scale is None:
+            label = "est. share of use"
     t = Text()
     t.append(f"Usage · last {USAGE_DAYS} days · {label}\n", style="bold")
     if not scanner.scanned_once:
@@ -1145,13 +1302,28 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
     t.append("        ", style="dim")
     t.append(f"{today.messages} msgs · {today.session_count} sessions\n\n")
     split = [(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0]
-    t.append_text(limits_text(limits, limits_on, width, polling=polling, hues=model_hues(split)))
+    t.append_text(limits_text(limits, limits_on, width, now, polling=polling, hues=model_hues(split),
+                              week_parts=week_parts(scanner, limits, limits_on, now)))
     t.append("\n")
 
     vals = [getattr(d, key) for d in days]
+    if key == "weight":
+        scale = scale if scale is not None else 100.0 / (sum(vals) or 1.0)
+        vals = [v * scale for v in vals]
+    shown = (lambda v: _project_value(v) if v else "0") if key == "weight" else fmt_count
     mx = max(vals) or 1
     label_w, val_w = 10, 6
     bar_w = max(6, width - label_w - 1 - 1 - val_w)
+    def weeks_back(d: DayUsage) -> int:
+        """0 for a day of the current limit week, 1 for the week before, 2 for the one before
+        that, by where most of the day falls. Judging by the middle of the day keeps a reset time
+        that drifts a fraction of a second across midnight from moving a whole day."""
+        if week_start is None:
+            return 0
+        start = datetime.strptime(d.date, "%Y-%m-%d")
+        middle = (start.timestamp() + (start + timedelta(days=1)).timestamp()) / 2
+        return 0 if middle >= week_start else 1 if middle >= week_start - WEEK_S else 2
+
     # column header over the value column; the m hint sits at the left
     t.append("m: next measure".ljust(label_w + 1 + bar_w + 1), style="dim")
     t.append(f"{col:>{val_w}}\n", style="dim")
@@ -1164,12 +1336,18 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
         lab = f"{dt:%a %b %d}" if dt.month != prev_month else f"{dt:%a}     {dt:%d}"
         prev_month = dt.month
         t.append(f"{lab:<{label_w}} ", style="bold" if is_today else "dim")
-        if v:
+        back = min(2, weeks_back(d))
+        if v and back:
+            t.append(_hatched_bar(v / mx, bar_w, HATCHES[back][0]), style=BAR_HUE)
+        elif v:
             t.append(_bar(v / mx, bar_w), style=BAR_HUE_TODAY if is_today else BAR_HUE)
         else:
             t.append("·".ljust(bar_w), style="dim")
         # recessed values: only today and the window maximum carry full ink
-        t.append(f"{fmt_count(v):>{val_w}}\n", style="bold" if (is_today or is_max) else "dim")
+        t.append(f"{shown(v):>{val_w}}\n", style="bold" if (is_today or is_max) else "dim")
+    drawn = sorted({min(2, weeks_back(d)) for d, v in zip(days, vals) if v} - {0})
+    if drawn:
+        t.append(" · ".join(f"{HATCHES[b][0]} {HATCHES[b][1]}" for b in drawn) + "\n", style="dim")
 
     if split:
         t.append("\n")
@@ -1227,8 +1405,11 @@ class SettingsScreen(Screen):
                 yield Label("Show status text in rows  (state word and age; the triangle color says the same)")
                 yield Switch(value=self.settings.show_status_text, id="show_status_text")
             with Horizontal(classes="row"):
-                yield Label("Usage panel open at launch  (u toggles it any time)")
+                yield Label("Usage graph open at launch  (u toggles it any time)")
                 yield Switch(value=self.settings.show_usage, id="show_usage")
+            with Horizontal(classes="row"):
+                yield Label("Project graph open at launch  (p toggles it any time)")
+                yield Switch(value=self.settings.show_projects, id="show_projects")
             with Horizontal(classes="row"):
                 yield Label(f"Align activity text  (pad names to a {self.settings.name_column_width}-column field)")
                 yield Switch(value=self.settings.align_columns, id="align_columns")
@@ -1253,6 +1434,8 @@ class SettingsScreen(Screen):
             self.settings.show_status_text = event.value
         elif event.switch.id == "show_usage":
             self.settings.show_usage = event.value
+        elif event.switch.id == "show_projects":
+            self.settings.show_projects = event.value
         elif event.switch.id == "align_columns":
             self.settings.align_columns = event.value
         elif event.switch.id == "show_limits":
@@ -1274,6 +1457,10 @@ class SettingsScreen(Screen):
         self.app.pop_screen()
 
 
+class UsageScroll(VerticalScroll, can_focus=False):
+    """The wheel scrolls it; tab goes on from the tree to the expiring pane."""
+
+
 class AgentFarm(App):
     TITLE = "agent-farm"
     SUB_TITLE = f"v{VERSION}" if VERSION else ""       # the header reads "agent-farm — v0.2.4"
@@ -1289,7 +1476,13 @@ class AgentFarm(App):
     #tree:focus > .tree--cursor { background: #1f3b5c; text-style: bold; }
     #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; }
     #usage.hidden { display: none; }
-    #usage-body { height: 1fr; padding: 0 1; overflow-y: auto; }
+    /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
+    #usage-scroll { height: 1fr; scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
+    #usage-scroll.hidden { display: none; }
+    #usage-body { height: auto; padding: 0 0 0 1; }
+    #projects { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
+    #projects.hidden { display: none; }
+    #projects.alone { height: 1fr; border-top: none; }
     #farm { padding: 0 1; border-top: solid $primary-darken-2; }
     #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;
               padding: 0 1; overflow-y: auto; }
@@ -1302,6 +1495,7 @@ class AgentFarm(App):
         Binding("f", "focus_tab", "Bring forward"),
         Binding("d", "toggle_detail", "Detail"),
         Binding("u", "toggle_usage", "Usage"),
+        Binding("p", "toggle_projects", "Projects"),
         Binding("m", "cycle_metric", "Metric", show=False),   # documented in the usage panel itself
         Binding("s", "settings", "Settings"),
         Binding("r", "refresh_now", "Refresh"),
@@ -1323,8 +1517,10 @@ class AgentFarm(App):
         self.expiry = ExpiryScanner()
         self.limits = PlanLimits()
         self.usage_metric = 0
-        # The usage panel shows when the setting or --usage says so, and `u` toggles it.
+        # The usage graph shows when the setting or --usage says so, and `u` toggles it. The
+        # project graph follows its setting and `p`. With both off the column collapses.
         self.usage_forced: bool = bool(show_usage)
+        self.projects_forced: bool = self.settings.show_projects
         self._usage_width = 0
         self._cursor_pending = False
         self._agent_fp: dict[str, dict[str, tuple]] = {}   # head key -> subagent fingerprint
@@ -1365,7 +1561,9 @@ class AgentFarm(App):
                 expiring.styles.height = BOTTOM_ROWS
                 yield expiring
             with Vertical(id="usage"):                  # scrolls above; the farm chart stays put below
-                yield Static("", id="usage-body")
+                with UsageScroll(id="usage-scroll"):
+                    yield Static("", id="usage-body")
+                yield Static("", id="projects")
                 farm = Static("", id="farm")
                 farm.styles.height = BOTTOM_ROWS        # as tall as the expiring pane: their tops meet
                 yield farm
@@ -1409,12 +1607,19 @@ class AgentFarm(App):
         self._set_window_title("")        # an iTerm2 tab gets its own title back
         super().exit(*args, **kwargs)
 
+    def _panel_open(self) -> bool:
+        return self.usage_forced or self.projects_forced
+
     def _apply_detail_visibility(self) -> None:
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
         self.query_one("#detail", Static).set_class(not show, "hidden")
-        show_u = self.usage_forced
+        show_u = self._panel_open()
         usage = self.query_one("#usage")
         usage.set_class(not show_u, "hidden")
+        self.query_one("#usage-scroll").set_class(not self.usage_forced, "hidden")
+        projects = self.query_one("#projects", Static)
+        projects.set_class(not self.projects_forced, "hidden")
+        projects.set_class(not self.usage_forced, "alone")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
             self.render_usage()
         # The expiring pane follows its setting, and steps aside in a window too short to
@@ -1516,7 +1721,7 @@ class AgentFarm(App):
             self._limits_worked = True
         self._tick_limits()
         drawn_at, drawn_polling = self._limits_drawn
-        if (self.is_running and self.settings.show_limits and self.usage_forced and
+        if (self.is_running and self.settings.show_limits and self._panel_open() and
                 (self._limits_polling() != drawn_polling or _monotonic() - drawn_at >= LIMITS_REDRAW_S)):
             self.render_usage()
 
@@ -1525,7 +1730,7 @@ class AgentFarm(App):
         only when work happened since the last fetch and that fetch is LIMITS_POLL_S old.
         Opening the panel or turning the setting on fetches at once (force), so the block
         never starts empty."""
-        if not (self.settings.show_limits and self.usage_forced):
+        if not (self.settings.show_limits and self._panel_open()):
             return
         due = self._limits_worked and _monotonic() - self._limits_last_try >= LIMITS_POLL_S
         if force or due:
@@ -1552,13 +1757,17 @@ class AgentFarm(App):
         try:
             usage = self.query_one("#usage")
             body = self.query_one("#usage-body", Static)
+            projects = self.query_one("#projects", Static)
         except NoMatches:
             return
         width = self._usage_text_width()
         self._usage_width = usage.size.width
         self._limits_drawn = (_monotonic(), self._limits_polling())
-        body.update(usage_text(self.usage, self.usage_metric, width,
-                               self.limits.report(), self.settings.show_limits, self._limits_polling()))
+        if self.usage_forced:
+            body.update(usage_text(self.usage, self.usage_metric, width,
+                                   self.limits.report(), self.settings.show_limits, self._limits_polling()))
+        if self.projects_forced:
+            projects.update(projects_text(self.usage, self.limits.report(), self.settings.show_limits, width))
         self.render_farm()
 
     def render_farm(self) -> None:
@@ -1576,10 +1785,16 @@ class AgentFarm(App):
         farm.update(activity_text(self.usage.activity(live_shells=live), self._usage_text_width()))
 
     def action_toggle_usage(self) -> None:
-        usage = self.query_one("#usage")
-        self.usage_forced = usage.has_class("hidden")      # hidden -> show, shown -> hide
+        self.usage_forced = not self.usage_forced
+        self._graph_toggled(self.usage_forced)
+
+    def action_toggle_projects(self) -> None:
+        self.projects_forced = not self.projects_forced
+        self._graph_toggled(self.projects_forced)
+
+    def _graph_toggled(self, opened: bool) -> None:
         self._apply_detail_visibility()
-        if self.usage_forced:
+        if opened:
             self.render_usage()
             self._tick_limits(force=True)
 
