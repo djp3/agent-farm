@@ -1,17 +1,50 @@
-# agent-farm
+# 🌾 agent-farm
 
-A Mac app that shows every Claude Code session running on your machine in one window:
-what each one is doing, whether it is busy, idle or waiting for you, and the subagents or
-teammates working under it. Sessions in iTerm2 and in the Claude desktop app both appear.
+**Run a dozen Claude Code agents without babysitting a dozen tabs.**
 
-It watches without taking part. Nothing is installed into Claude Code and no hooks are
-added; agent-farm reads the files Claude Code already writes under `~/.claude`, looks at the
-process list for the shells each session is running, and asks iTerm2 which tab owns which
-session. Two things go further, and only when you ask: **keep** in the expiring pane marks
-a session's files as just used, so Claude Code's 30-day cleanup leaves it alone (no file's
-contents change; see [The expiring pane](#the-expiring-pane)), and the plan-limits block
-of the usage panel, off by default, asks Anthropic for the same numbers `/usage` shows
-(see [The usage panel](#the-usage-panel)).
+One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
+ago. Something ate a third of your week and you can't say what. agent-farm is a Mac app that
+puts your whole fleet in one window, with whatever needs you at the top, so your agents keep
+moving and you step in only where it counts.
+
+**[Download for Mac](https://github.com/djp3/agent-farm/releases/latest)** · macOS 13+ on
+Apple silicon · free and open source
+
+*Screenshot coming soon.*
+
+### The agent that needs you is always on top
+
+Every session in iTerm2 and the Claude desktop app lands on one list, with whoever has waited
+longest first. Pick one, press `f`, and you're in its tab. Even the title bar pitches in: one
+🐓 per session that's busy or waiting, so the Dock and the window switcher show how the farm
+is doing before you open it.
+
+### The whole team at a glance
+
+Subagents and teammates nest under their lead, with the commands they have running beneath
+whoever started them. Green is at work, blue is at rest, gray has stopped, and a white name
+means you can step in. You can spot a stuck subagent without opening a single transcript.
+
+### See where your week went
+
+Turn on plan limits and you get what `/usage` shows, then more: the `week` bar splits by
+model, `p` breaks the week's percent down repo by repo (chats and Cowork get their own rows),
+and the daily bars estimate how much of your limit each day took. A tick on each limit bar
+marks an even pace, so you know you're running hot while there's still time to slow down.
+
+### Never lose a session to the 30-day cleanup
+
+Claude Code quietly deletes sessions 30 days after their last use. agent-farm lists the ones
+going next, and one click (or `k`) gives any of them another 30 days.
+
+### Installs nothing. Stays on your Mac.
+
+No hooks, no plugins, no changes to your Claude Code setup. agent-farm reads the files Claude
+Code already writes, checks the process list, and listens to iTerm2 over one quiet connection,
+with a ♥ that beats each time it checks in. It sends none of your work anywhere: its only
+network traffic is a daily update check with GitHub and, if you turn plan limits on, the same
+usage request `/usage` makes. Apart from its own settings and log, the only thing it ever
+changes is a session's file modification times, when you press keep.
 
 ## Install
 
@@ -19,20 +52,21 @@ of the usage panel, off by default, asks Anthropic for the same numbers `/usage`
    [latest release](https://github.com/djp3/agent-farm/releases/latest), unzip it and drag
    `agent-farm.app` to Applications.
 2. Open it. The app is notarized, so it opens like any other download.
-3. On first use macOS may ask for one permission, which is optional: **Files and Folders**
-   (Documents, Desktop and similar) lets the detail pane show the git repository of
-   sessions working in those folders.
 
-Updates install themselves: the app checks GitHub once a day and offers each new release
+Updates take care of themselves: the app checks GitHub once a day and offers each new release
 with its notes. **agent-farm ▸ Check for Updates…** checks now.
 
-Requires macOS 13 or later on Apple silicon, Claude Code, and iTerm2 if you want the
-tab-focus key, with its Python API turned on (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable
-Python API).
+You need macOS 13 or later on Apple silicon, and Claude Code. To reach iTerm2 tabs, turn on
+iTerm2's Python API (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable Python API).
+
+You may be asked for a few permissions along the way, all optional:
+
+- **Files and Folders** (Documents, Desktop and similar) lets agent-farm find the git
+  repository of sessions working in those folders.
+- **iTerm2 access**, the first time agent-farm connects to it, lets `f` bring a tab forward.
+- **Keychain access**, only if you turn on plan limits. See [The usage panel](#the-usage-panel).
 
 ## The window
-
-![agent-farm showing a fleet of Claude Code sessions, the usage panel and the detail pane](docs/screenshot.png)
 
 Under the title bar, two columns. On the left, from top to bottom:
 
@@ -116,23 +150,25 @@ a fixed column, so activity text lines up down the whole list.
 Last comes the activity text: what a waiting session is waiting for, the running tool, or
 the last message; a subagent with nothing to say yet shows its task. A shell's row shows
 the command where a name goes, then how long it has run and what it is for, in the agent's
-own words (`◐ npm run deploy:dev  2m03s · Deploy the stack to dev`). A command gets a row
-once it has run five seconds, so a busy agent's quick commands never flicker in and out,
-and it is nested under the agent that started it: the session itself, or one of its
-subagents.
+own words (`◐ npm test  2m03s · Run the test suite`). A command gets a row once it has run
+five seconds, so a busy agent's quick commands never flicker in and out, and it is nested
+under the agent that started it: the session itself, or one of its subagents.
 
 ### The fleet line
 
-First a heart for the connection to iTerm2: a green `♥` while connected, which beats
-(flashes bright) each time agent-farm reads iTerm2's tabs, so when iTerm2 announces a tab
-opening, closing or moving, and once a minute besides; a gray `♡` while iTerm2 is not running
-or agent-farm is connecting; a red `♡` when iTerm2 keeps turning the connection down (most
-often its Python API is off). Hover for the details. Then one `■` per head session, grouped
-and colored waiting → busy → idle → inactive (yellow, green, blue, gray), so the count of
-each color is the count of sessions in that state, then the fleet-wide subagent tally in
-triangles and asterisks. Two red notes appear only when something is wrong: `it2 missing`
-when agent-farm has no way to reach iTerm2 at all (the `f` key needs it), and `⚠ N` for
-warnings logged in the last ten minutes.
+From left to right:
+
+- **A heart for the connection to iTerm2.** A green `♥` while connected, which beats (flashes
+  bright) each time agent-farm reads iTerm2's tabs: when iTerm2 announces a tab opening,
+  closing or moving, and once a minute besides. A gray `♡` while iTerm2 is not running or
+  agent-farm is connecting. A red `♡` when iTerm2 keeps turning the connection down, most
+  often because its Python API is off. Hover for the details.
+- **One `■` per head session**, grouped and colored waiting → busy → idle → inactive (yellow,
+  green, blue, gray), so the count of each color is the count of sessions in that state.
+- **The fleet-wide subagent tally**, in triangles and asterisks.
+- **Two red notes, only when something is wrong**: `it2 missing` when agent-farm has no way
+  to reach iTerm2 at all (the `f` key needs it), and `⚠ N` for warnings logged in the last
+  ten minutes.
 
 ### The detail pane
 
@@ -159,10 +195,10 @@ sessions that turn that old within two weeks, soonest first.
 At the top a chart counts them per day for the next two weeks, today at the left. Below it
 each session has its name (the one `/resume` shows), when it expires (turns 30 days old;
 it is deleted at the first cleanup after that, and until then keep still saves it, so an
-expired session can be kept too), its size with its
-subagents and tool results, its folder, and a **keep** button. Two days or less to go is
-yellow, with a white name: it needs you. The rest are gray. Sessions you started in the
-Claude desktop app are not listed; Claude Code never deletes those by age.
+expired session can be kept too), its size with its subagents and tool results, its folder,
+and a **keep** button. Two days or less to go is yellow, with a white name: it needs you.
+The rest are gray. Sessions you started in the Claude desktop app are not listed; Claude
+Code never deletes those by age.
 
 **keep** gives a session another full 30 days. A click on the button does it, or tab to the
 pane, pick a session with ↑ ↓ and press `k`. agent-farm sets the modification time of
@@ -207,49 +243,64 @@ width lives only there.
 
 ### The usage panel
 
-One bar per local day for the last 14 days, labelled by weekday, aggregated from every
-transcript under `~/.claude/projects`, subagents included. The measure is named in the
-title and over the value column; `m` cycles it. Today's bar is drawn at full green and the
-rest dimmed. The 14 days span three limit weeks: this week's days are solid (the days the
-`week` bar counts), last week's are a dense shade (`▓`) and the week before's cross-hatched
-(`╳`). The first measure, estimated limit use, gives each day's tokens the weights the
-project graph uses and shows them as a percent of your weekly limit, so the days since the
-week began add up to Claude Code's part of the `week` bar (chats and Cowork are the rest).
-No raw count does that: cache reads are almost all the tokens but are cheap, and output is
-under one percent of the tokens but a sixth of the weight. With plan limits off it shows
-each day's share of the 14 days instead. Beneath the days a stacked bar splits output tokens by model, with a legend;
-each model keeps its color and texture for the life of the app, so the stack reads without
-color. The "logged cost" line sums the cost checkpoints Claude Code writes at the end of
-each session, so today's sessions are not in it yet.
+**The daily bars.** One bar per local day for the last 14 days, labelled by weekday,
+aggregated from every transcript under `~/.claude/projects`, subagents included. The measure
+is named in the title and over the value column; `m` cycles it. Today's bar is drawn at full
+green and the rest dimmed.
+
+The 14 days span three limit weeks, and a bar's fill says which:
+
+| fill | days |
+|------|------|
+| solid `█` | this week: the days the `week` bar counts |
+| dense shade `▓` | last week |
+| cross-hatch `╳` | the week before |
+
+The first measure, estimated limit use, gives each day's tokens the weights the project graph
+uses and shows them as a percent of your weekly limit, so the days since the week began add
+up to Claude Code's part of the `week` bar (chats and Cowork are the rest). No raw count does
+that: cache reads are almost all the tokens but are cheap, and output is under one percent of
+the tokens but a sixth of the weight. With plan limits off it shows each day's share of the
+14 days instead.
+
+Beneath the days a stacked bar splits output tokens by model, with a legend; each model keeps
+its color and texture for the life of the app, so the stack reads without color. The "logged
+cost" line sums the cost checkpoints Claude Code writes at the end of each session, so
+today's sessions are not in it yet.
 
 **Plan limits.** With the setting on, a block above the days shows what `/usage` shows in
 Claude Code: one bar per rate-limit window your plan has (the current week, per-model weeks
 such as Fable, a 5-hour session on plans that have one, and extra spend when it is on) with
-the percent used and the time left until it resets. Anthropic's reading of a window sets
-its color when the reply gives one; otherwise green turns orange at 75% and red at 90%. A
-tick in each bar marks how far through its window the clock is, which is where an even pace
-would put you: a bar that stops short of the tick is using less than that, one that runs
-past it more. Extra spend has no such clock and no tick. The `week` bar is split by model
-in the colors and textures of the output-by-model bar below, estimated the way the project
-graph is, with chats and Cowork in gray at its end. A model's week, such as Fable's, is drawn
-in that model's color. Either turns orange or red as a whole when it needs attention. The last line says where the week's use went by surface (`used in claude
-code 98% · chats 1%`); those are shares of what you used, not of a limit.
-When a window has reset since the last reading, it says `reset` until the next fetch.
-Those numbers exist nowhere on disk, so
-agent-farm fetches them the way Claude Code does: it reads the Claude Code sign-in from
-your Keychain (the item named `Claude Code-credentials`) and asks Anthropic's usage
-endpoint when you open the panel, then again as soon as a session or subagent has worked
-since the last fetch, at most once every five minutes. While everyone is idle or waiting
-for you no request goes out and the header says paused, since the numbers cannot move. macOS may ask you to allow the Keychain
-read. The sign-in is used as is, never renewed, never written anywhere and never logged;
-when it has expired, the block says so until Claude Code renews it. The plan's name in the
-header comes from the profile Claude Code keeps in `~/.claude.json`, the only value taken
-from that file. The block is off by default and the app makes no network request of its own
-while it is off.
+the percent used and the time left until it resets. When a window has reset since the last
+reading, it says `reset` until the next fetch.
+
+- **Color.** Anthropic's reading of a window sets its color when the reply gives one;
+  otherwise green turns orange at 75% and red at 90%.
+- **Pace.** A tick in each bar marks how far through its window the clock is, which is where
+  an even pace would put you: a bar that stops short of the tick is using less than that, one
+  that runs past it more. Extra spend has no such clock and no tick.
+- **Models.** The `week` bar is split by model in the colors and textures of the
+  output-by-model bar below, estimated the way the project graph is, with chats and Cowork in
+  gray at its end. A model's week, such as Fable's, is drawn in that model's color. Either
+  turns orange or red as a whole when it needs attention.
+- **Surfaces.** The last line says where the week's use went by surface (`used in claude code
+  90% · chats 6% · cowork 4%`); those are shares of what you used, not of a limit.
+
+Those numbers exist nowhere on disk, so agent-farm fetches them the way Claude Code does: it
+reads the Claude Code sign-in from your Keychain (the item named `Claude Code-credentials`)
+and asks Anthropic's usage endpoint when you open the panel, then again as soon as a session
+or subagent has worked since the last fetch, at most once every five minutes. While everyone
+is idle or waiting for you no request goes out and the header says paused, since the numbers
+cannot move. macOS may ask you to allow the Keychain read.
+
+The sign-in is used as is, never renewed, never written anywhere and never logged; when it
+has expired, the block says so until Claude Code renews it. The plan's name in the header
+comes from the profile Claude Code keeps in `~/.claude.json`, the only value taken from that
+file. The block is off by default, and while it is off it makes no network request.
 
 **Projects.** Press `p` for how the week's percent was spent, on its own or below the usage
 graph: one row per GitHub repo, largest first, with the five largest named. The rows add up
-to the `week` bar, so with the week at 34% a project at 27% used most of it. Chats and Cowork
+to the `week` bar, so with the week at 40% a project at 30% used most of it. Chats and Cowork
 have no folder, so each gets a row of its own. A worktree counts toward its repo and two
 clones of a repo count as one. A folder outside any repo counts toward the folder its session
 started in. Each message counts toward the folder it ran in, so agents working in the same
@@ -316,11 +367,15 @@ it again.
 Claude Code keeps a registry entry per running session in `~/.claude/sessions`, with its
 busy or idle state, and appends every turn to a transcript under `~/.claude/projects`;
 subagents get transcripts of their own next to their lead's. agent-farm tails those files
-once a second, checks their modification times once a minute for the expiring pane, looks at which shells each session's process is running, and draws the result.
-Which tab owns which terminal comes from iTerm2's Python API over one connection, made
-while iTerm2 is running (agent-farm never starts it): iTerm2 hands out one pass for it,
-through AppleScript, and then announces every tab that opens, closes or moves. agent-farm
-re-reads the tabs then and once a minute, and brings a tab forward over the same connection. The app is a Python program (Textual) running inside a native window; see
+once a second, checks their modification times once a minute for the expiring pane, looks at
+which shells each session's process is running, and draws the result.
+
+Which tab owns which terminal comes from iTerm2's Python API over one connection, made while
+iTerm2 is running (agent-farm never starts it): iTerm2 hands out one pass for it, through
+AppleScript, and then announces every tab that opens, closes or moves. agent-farm re-reads
+the tabs then and once a minute, and brings a tab forward over the same connection.
+
+The app is a Python program (Textual) running inside a native window; see
 [DEVELOPMENT.md](DEVELOPMENT.md) to run it from source, build the app or cut a release.
 
 ## License
