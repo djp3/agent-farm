@@ -10,7 +10,7 @@ moving and you step in only where it counts.
 **[Download for Mac](https://github.com/djp3/agent-farm/releases/latest)** · macOS 13+ on
 Apple silicon · free and open source
 
-*Screenshot coming soon.*
+![agent-farm showing a fleet of Claude Code sessions with the usage panel, project graph and detail pane](docs/screenshot.png)
 
 ### The agent that needs you is always on top
 
