@@ -6,13 +6,15 @@ Everything here is read-only. Claude Code already writes:
   ~/.claude/projects/<slug>/<sessionId>.jsonl        transcript
   ~/.claude/projects/<slug>/<sessionId>/subagents/   one .jsonl + .meta.json per subagent
   ~/.claude/teams/session-<id8>/config.json          team membership (lead + teammates)
-iTerm2 ships `it2`, whose `session list --json` maps a tty to a tab, and the process table
-shows the shells Claude Code is running commands in, as children of the session's process.
+iTerm2's Python API says which tab owns each tty, over one connection kept open (ITerm2Map),
+and the process table shows the shells Claude Code is running commands in, as children of the
+session's process.
 
 No hooks are installed and nothing is sent to the instances.
 """
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import logging
@@ -33,6 +35,15 @@ try:
     import psutil
 except ImportError:  # pragma: no cover
     psutil = None
+
+try:
+    import iterm2
+    from iterm2 import auth as iterm2_auth
+    from iterm2.notifications import (async_subscribe_to_layout_change_notification,
+                                      async_subscribe_to_new_session_notification,
+                                      async_subscribe_to_terminate_session_notification)
+except ImportError:  # pragma: no cover
+    iterm2 = None
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -643,70 +654,168 @@ class Instance:
 # --------------------------------------------------------------------------- #
 # iTerm2 mapping
 # --------------------------------------------------------------------------- #
+ITERM_APP_NAME = "agent-farm"   # how iTerm2 names this connection (Scripts > Console)
+ITERM_RECHECK_S = 60.0          # a full re-read even without an announcement, in case one was missed
+ITERM_RETRY_S = 15.0            # while iTerm2 is not running, or turned the connection down
+ITERM_SETTLE_S = 0.2            # a new tab is a burst of announcements; read once after it
+ITERM_CONNECT_S = 10.0
+ITERM_FOCUS_S = 3.0
+
+
+def iterm_running() -> bool:
+    """Whether iTerm2 is running, from the process table: asking it through AppleScript would
+    itself start an app, and a `tell` would start iTerm2."""
+    if psutil is None:
+        return False
+    return any(p.info["name"] == "iTerm2" for p in psutil.process_iter(["name"]))
+
+
 class ITerm2Map:
-    def __init__(self, refresh_s: float = 5.0):
-        self.refresh_s = refresh_s
-        self._last = 0.0
+    """Which iTerm2 session owns each tty, kept over one connection to iTerm2's Python API.
+
+    The connection costs one pass (a cookie) from iTerm2, which comes through AppleScript, and
+    macOS counts every osascript run as an app launch and quit. After that iTerm2 announces each
+    tab and session that opens, closes or moves, and the map is re-read then, and once a minute
+    in case an announcement was missed. (Before, `it2 session list` ran every few seconds and
+    fetched a fresh pass every time.) When iTerm2 quits the map empties, and the connection is
+    made again once iTerm2 is running; agent-farm never starts iTerm2 itself.
+    """
+
+    def __init__(self):
         self.by_tty: dict[str, dict] = {}
-        self.available = os.path.exists(IT2)
-        self._failures = 0                      # consecutive `session list` failures
-        self._lock = threading.Lock()           # one `it2 session list` at a time
+        self.available = iterm2 is not None or os.path.exists(IT2)
+        self.connected = False
+        # For the heart in the fleet line: "starting", "not running", "connected" or "refused"
+        # (three failed connections in a row), when the map was last read (a beat), and since when
+        # the connection has been up.
+        self.state = "starting" if iterm2 is not None else "unavailable"
+        self.beat_at = 0.0                      # time.monotonic()
+        self.connected_at = 0.0                 # time.time()
+        self._failures = 0                      # consecutive failed connections
         self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._app = None
 
     def start_background(self) -> None:
-        """Refresh the tab map on a thread of its own. `it2` can stall for seconds, and
-        that must not hold up the once-a-second collector tick, which only reads by_tty."""
-        if self._thread or not self.available:
+        """Keep the map on a thread of its own: the connection lives in an event loop there,
+        and the once-a-second collector tick only reads by_tty."""
+        if self._thread or iterm2 is None:
             return
-        self._thread = threading.Thread(target=self._loop, name="it2-refresh", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="iterm2-api", daemon=True)
         self._thread.start()
 
-    def _loop(self) -> None:
+    def _run(self) -> None:
+        asyncio.run(self._follow_forever())
+
+    async def _follow_forever(self) -> None:
+        self._loop = asyncio.get_running_loop()
         while True:
-            self.refresh(force=True)
-            time.sleep(self.refresh_s)
+            if not iterm_running():
+                self.by_tty = {}                # no iTerm2, no sessions in it
+                self.state = "not running"
+                await asyncio.sleep(ITERM_RETRY_S)
+                continue
+            try:
+                connection = await self._connect()
+            except Exception as e:
+                self._failed(e)
+                await asyncio.sleep(ITERM_RETRY_S)
+                continue
+            self._failures = 0
+            try:
+                await self._follow(connection)
+            except Exception as e:
+                log.info("iTerm2: lost the connection: %r", e)
+            finally:
+                self.connected, self._app, self.state = False, None, "starting"
+            await asyncio.sleep(1.0)
 
-    def refresh(self, force: bool = False) -> None:
-        if not self.available:
-            return
-        now = time.time()
-        if not force and now - self._last < self.refresh_s:
-            return
-        if not self._lock.acquire(blocking=False):      # a refresh is already running
-            return
+    def _failed(self, e: BaseException) -> None:
+        # One refusal is often iTerm2 starting up; a run of them is worth a warning.
+        self._failures += 1
+        if self._failures >= 3:
+            self.state = "refused"
+            if _debounce.ok("iterm2-connect"):
+                log.warning("iTerm2: could not connect %d times in a row: %r", self._failures, e)
+        else:
+            log.info("iTerm2: could not connect (%d): %r", self._failures, e)
+
+    async def _connect(self):
+        """One pass request, then the connection. The pass is in the environment only while
+        connecting, since every program agent-farm starts would inherit it, and iTerm2 takes it
+        only once anyway."""
+        if not iterm2_auth.applescript_auth_disabled():
+            pair = await asyncio.to_thread(iterm2_auth.request_cookie_and_key, True, ITERM_APP_NAME,
+                                           iterm2_auth.CommandLineApplescriptRunner)
+            cookie, key = pair.split(" ")
+            os.environ["ITERM2_COOKIE"], os.environ["ITERM2_KEY"] = cookie, key
         try:
-            self._last = now
-            self._refresh_locked()
+            return await asyncio.wait_for(iterm2.Connection.async_create(), ITERM_CONNECT_S)
+        except SystemExit:                      # the library exits when iTerm2 finds it too old
+            raise RuntimeError("iTerm2 turned down this version of its Python API library") from None
         finally:
-            self._lock.release()
+            os.environ.pop("ITERM2_COOKIE", None)
+            os.environ.pop("ITERM2_KEY", None)
 
-    def _refresh_locked(self) -> None:
+    async def _follow(self, connection) -> None:
+        """Re-read the map whenever iTerm2 announces a change, and every ITERM_RECHECK_S, until
+        the connection closes."""
+        changed = asyncio.Event()
+
+        async def on_change(_connection, _message) -> None:
+            changed.set()
+        for subscribe in (async_subscribe_to_layout_change_notification,
+                          async_subscribe_to_new_session_notification,
+                          async_subscribe_to_terminate_session_notification):
+            await subscribe(connection, on_change)
+        self._app = await iterm2.async_get_app(connection)
+        self.connected, self.state, self.connected_at = True, "connected", time.time()
+        log.info("iTerm2: connected, following its tabs")
+        closed = asyncio.ensure_future(connection.websocket.wait_closed())
         try:
-            r = subprocess.run(
-                [IT2, "session", "list", "--json"],
-                capture_output=True, text=True, timeout=8,
-            )
-            if r.returncode != 0:
-                raise RuntimeError(f"rc={r.returncode} stderr={r.stderr.strip()[:300]}")
-            rows = json.loads(r.stdout or "[]")
-        except Exception as e:
-            # The previous tab map stays in use, so a single slow answer from iTerm2 is
-            # not worth a warning; a run of them is.
-            self._failures += 1
-            if self._failures >= 3:
-                if _debounce.ok("it2-list"):
-                    log.warning("it2 session list failed %d times in a row: %r", self._failures, e)
-            else:
-                log.info("it2 session list slow/failed (%d): %r — keeping the previous tab map",
-                         self._failures, e)
-            return
-        self._failures = 0
+            while True:
+                await self._read(self._app)
+                waiter = asyncio.ensure_future(changed.wait())
+                await asyncio.wait({waiter, closed}, timeout=ITERM_RECHECK_S,
+                                   return_when=asyncio.FIRST_COMPLETED)
+                waiter.cancel()
+                if closed.done():
+                    log.info("iTerm2: the connection closed")
+                    return
+                if changed.is_set():
+                    await asyncio.sleep(ITERM_SETTLE_S)
+                    changed.clear()
+                await self._app.async_refresh()
+        finally:
+            closed.cancel()
+
+    async def _read(self, app) -> None:
         m = {}
-        for r in rows:
-            tty = (r.get("tty") or "").replace("\\", "")
-            if tty:
-                m[tty] = r
+        for window in app.terminal_windows:
+            for tab in window.tabs:
+                for session in tab.sessions:
+                    tty = await session.async_get_variable("tty")
+                    if isinstance(tty, str) and tty:
+                        name = await session.async_get_variable("name")
+                        m[tty] = {"id": session.session_id, "tty": tty, "name": name if isinstance(name, str) else ""}
         self.by_tty = m
+        self.beat_at = time.monotonic()
+
+    def refresh_once(self) -> None:
+        """Read the map over a connection of its own and close it (the collector's dump)."""
+        if iterm2 is None or not iterm_running():
+            return
+
+        async def once() -> None:
+            connection = await self._connect()
+            try:
+                await self._read(await iterm2.async_get_app(connection))
+            finally:
+                await connection.websocket.close()
+        try:
+            asyncio.run(once())
+        except Exception as e:
+            log.info("iTerm2: one-shot read failed: %r", e)
 
     def lookup(self, tty: str) -> dict:
         if not tty:
@@ -738,9 +847,10 @@ class ITerm2Map:
         return self.activate(CLAUDE_APP_BUNDLE_ID, label)
 
     def focus(self, session_id: str, label: str = "") -> tuple[bool, str]:
-        """Bring an iTerm2 session to the front. `it2 session focus <session-id>` is positional."""
+        """Bring an iTerm2 session to the front: over the connection when there is one, else
+        through `it2 session focus <session-id>` (positional)."""
         if not self.available:
-            log.warning("focus %s: it2 not found at %s", label, IT2)
+            log.warning("focus %s: neither iTerm2's Python API nor it2 at %s", label, IT2)
             return False, "it2 not installed"
         if not session_id:
             log.warning("focus %s: no iTerm2 session id mapped", label)
@@ -754,6 +864,16 @@ class ITerm2Map:
         ok, why = self.activate(ITERM_BUNDLE_ID, label)
         if not ok:
             return False, why
+        loop, app = self._loop, self._app
+        if self.connected and loop is not None and app is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(self._select(app, session_id), loop).result(ITERM_FOCUS_S)
+                log.info("focus %s: ok (session %s)", label, session_id)
+                return True, ""
+            except Exception as e:
+                log.info("focus %s: over the connection failed (%r); trying it2", label, e)
+        if not os.path.exists(IT2):
+            return False, "iTerm2 is not connected"
         cmd = [IT2, "session", "focus", session_id]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
@@ -766,6 +886,13 @@ class ITerm2Map:
             return False, msg or f"it2 exited {r.returncode}"
         log.info("focus %s: ok (session %s)", label, session_id)
         return True, ""
+
+    @staticmethod
+    async def _select(app, session_id: str) -> None:
+        session = app.get_session_by_id(session_id)
+        if session is None:
+            raise LookupError(f"no iTerm2 session {session_id}")
+        await session.async_activate(select_tab=True, order_window_front=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -780,7 +907,7 @@ class Collector:
         self._busy = threading.Lock()
 
     def start(self) -> None:
-        """Begin background work the app needs: the iTerm2 tab map on its own thread."""
+        """Begin background work the app needs: the iTerm2 tab map, over its connection."""
         self.iterm.start_background()
 
     # ---- helpers ----------------------------------------------------------
@@ -1141,7 +1268,7 @@ STATUS_GLYPH = {
 
 if __name__ == "__main__":
     c = Collector()
-    c.iterm.refresh(force=True)      # the app refreshes this on a thread; the dump is one-shot
+    c.iterm.refresh_once()           # the app follows iTerm2 on a thread; the dump is one-shot
     for inst in c.snapshot():
         print(f"{STATUS_GLYPH.get(inst.status, '?')} [{inst.pid}] {inst.name or '(unnamed)'}  "
               f"{inst.project}{'@' + inst.branch if inst.branch else ''}  {inst.status} {fmt_age(inst.status_since)}  "

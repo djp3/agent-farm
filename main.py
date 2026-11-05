@@ -406,12 +406,41 @@ HEAD_GLYPH = "■"                      # one square per head session in the fle
 HEAD_ORDER = ("waiting", "busy", "idle", "dead", "unknown")
 
 
+# The iTerm2 connection's heart, first on the fleet line: it beats (a bright flash) each time
+# the tab map is read, which is when iTerm2 announces a change and once a minute besides.
+# Colored by the rows' rule: green working, gray stopped, red a problem.
+HEART, HEART_HOLLOW = "♥", "♡"
+HEART_CALM, HEART_BEAT = "#00873c", "bold #5fff87"     # between beats a darker green, a beat brighter
+HEART_BEAT_S = 1.5                       # how long a beat shows; the line redraws every second
+
+
+def iterm_heart(state: str, beat_age: float) -> tuple[str, str]:
+    """(glyph, style) for the connection's state and the seconds since it last beat."""
+    if state == "connected":
+        return HEART, HEART_BEAT if beat_age < HEART_BEAT_S else HEART_CALM
+    return HEART_HOLLOW, RED if state == "refused" else GRAY
+
+
+def iterm_heart_words(state: str, connected_at: float, sessions: int, now: float) -> str:
+    if state == "connected":
+        return (f"♥ iTerm2: connected for {fmt_age(connected_at, now)}, {sessions} session{'s' if sessions != 1 else ''} "
+                "mapped; it beats when iTerm2 announces a change, and once a minute besides")
+    if state == "not running":
+        return "♡ iTerm2 is not running; agent-farm connects when it starts"
+    if state == "refused":
+        return ("♡ iTerm2 keeps turning the connection down: check iTerm2 ▸ Settings ▸ General ▸ Magic ▸ "
+                "Enable Python API; details in the log")
+    if state == "starting":
+        return "♡ connecting to iTerm2…"
+    return ""
+
+
 def _fleet_group(i: Instance) -> str:
     return "idle" if i.status == "shell" else i.status      # drawn as idle, its shells beneath it
 
 
 def fleet_line(instances: list[Instance], show_text: bool,
-               error_count: int, it2_ok: bool) -> Text:
+               error_count: int, it2_ok: bool, heart: tuple[str, str] | None = None) -> Text:
     """The one-line summary above the tree: a square per head session grouped and colored
     by state (waiting → busy → idle → inactive), the fleet-wide subagent tally in the same
     triangles-and-asterisks system as the rows, then red notes only when it2 is missing or
@@ -419,6 +448,9 @@ def fleet_line(instances: list[Instance], show_text: bool,
     With the status-text setting on, the counts are also spelled out."""
     live = [i for i in instances if i.alive]
     t = Text()
+    if heart:
+        t.append(heart[0], style=heart[1])
+        t.append(" ")
     for st in HEAD_ORDER:
         n = sum(1 for i in instances if (_fleet_group(i) == st and (i.alive or st in ("dead", "unknown"))))
         if n:
@@ -448,7 +480,8 @@ def fleet_line(instances: list[Instance], show_text: bool,
     return t
 
 
-def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool) -> str:
+def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool,
+                  heart_words: str = "") -> str:
     """Everything the fleet line encodes, plus the active ordering, as words (on hover)."""
     live = [i for i in instances if i.alive]
     counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "shell", "idle")}
@@ -473,6 +506,8 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
         lines.append(f"{len(shells)} shell{'s' if len(shells) != 1 else ''} running"
                      + (f" ({stale} whose agent has stopped)" if stale else ""))
     lines.append(f"ordering: {ordering.name} — {ordering.description}")
+    if heart_words:
+        lines.append(heart_words)
     if not it2_ok:
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
@@ -2030,9 +2065,11 @@ class AgentFarm(App):
                 pass
 
         recent = errors.recent(ERROR_WINDOW_S)
-        self._set_status(fleet_line(instances, self.settings.show_status_text,
-                                    recent, self.collector.iterm.available),
-                         fleet_tooltip(instances, self.ordering, recent, self.collector.iterm.available))
+        it = self.collector.iterm
+        heart = iterm_heart(it.state, time.monotonic() - it.beat_at) if it.state != "unavailable" else None
+        words = iterm_heart_words(it.state, it.connected_at, len(it.by_tty), time.time())
+        self._set_status(fleet_line(instances, self.settings.show_status_text, recent, it.available, heart),
+                         fleet_tooltip(instances, self.ordering, recent, it.available, words))
         self._set_window_title(window_title(instances))
         self._limits_on_snapshot(instances)
         self._refresh_detail()

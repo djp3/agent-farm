@@ -27,7 +27,8 @@ Updates install themselves: the app checks GitHub once a day and offers each new
 with its notes. **agent-farm ▸ Check for Updates…** checks now.
 
 Requires macOS 13 or later on Apple silicon, Claude Code, and iTerm2 if you want the
-tab-focus key.
+tab-focus key, with its Python API turned on (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable
+Python API).
 
 ## The window
 
@@ -122,11 +123,16 @@ subagents.
 
 ### The fleet line
 
-One `■` per head session, grouped and colored waiting → busy → idle → inactive (yellow,
-green, blue, gray), so the count of each color is the count of sessions in that state, then
-the fleet-wide subagent tally in triangles and asterisks. Two red notes appear only when something is wrong:
-`it2 missing` when iTerm2's command-line tool cannot be found (the `f` key needs it), and
-`⚠ N` for warnings logged in the last ten minutes.
+First a heart for the connection to iTerm2: a green `♥` while connected, which beats
+(flashes bright) each time agent-farm reads iTerm2's tabs, so when iTerm2 announces a tab
+opening, closing or moving, and once a minute besides; a gray `♡` while iTerm2 is not running
+or agent-farm is connecting; a red `♡` when iTerm2 keeps turning the connection down (most
+often its Python API is off). Hover for the details. Then one `■` per head session, grouped
+and colored waiting → busy → idle → inactive (yellow, green, blue, gray), so the count of
+each color is the count of sessions in that state, then the fleet-wide subagent tally in
+triangles and asterisks. Two red notes appear only when something is wrong: `it2 missing`
+when agent-farm has no way to reach iTerm2 at all (the `f` key needs it), and `⚠ N` for
+warnings logged in the last ten minutes.
 
 ### The detail pane
 
@@ -310,8 +316,11 @@ it again.
 Claude Code keeps a registry entry per running session in `~/.claude/sessions`, with its
 busy or idle state, and appends every turn to a transcript under `~/.claude/projects`;
 subagents get transcripts of their own next to their lead's. agent-farm tails those files
-once a second, checks their modification times once a minute for the expiring pane, looks at which shells each session's process is running, asks iTerm2's
-`it2` tool which tab owns which terminal, and draws the result. The app is a Python program (Textual) running inside a native window; see
+once a second, checks their modification times once a minute for the expiring pane, looks at which shells each session's process is running, and draws the result.
+Which tab owns which terminal comes from iTerm2's Python API over one connection, made
+while iTerm2 is running (agent-farm never starts it): iTerm2 hands out one pass for it,
+through AppleScript, and then announces every tab that opens, closes or moves. agent-farm
+re-reads the tabs then and once a minute, and brings a tab forward over the same connection. The app is a Python program (Textual) running inside a native window; see
 [DEVELOPMENT.md](DEVELOPMENT.md) to run it from source, build the app or cut a release.
 
 ## License

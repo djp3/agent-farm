@@ -28,25 +28,10 @@ def test_usage_scan_declines_while_previous_scan_runs():
         u._busy.release()
 
 
-def test_iterm_refresh_declines_while_another_refresh_runs(monkeypatch):
-    m = ITerm2Map()
-    m.available = True
-
-    def must_not_run(*args, **kwargs):
-        raise AssertionError("it2 must not be invoked while a refresh holds the lock")
-
-    monkeypatch.setattr(collector.subprocess, "run", must_not_run)
-    assert m._lock.acquire(blocking=False)
-    try:
-        m.refresh(force=True)                       # returns without touching it2
-    finally:
-        m._lock.release()
-
-
 def test_iterm_background_thread_starts_once(monkeypatch):
     m = ITerm2Map()
     m.available = True
-    monkeypatch.setattr(m, "_loop", lambda: threading.Event().wait(0.01))
+    monkeypatch.setattr(m, "_run", lambda: threading.Event().wait(0.01))
     m.start_background()
     first = m._thread
     m.start_background()
