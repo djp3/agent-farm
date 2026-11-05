@@ -73,7 +73,7 @@ def _transcript(commands: dict) -> TranscriptState:
 
 def _team(head_status="idle", agent_status="dormant"):
     now = time.time()
-    inst = Instance(pid=10, session_id="S", name="payable", alive=True, status=head_status)
+    inst = Instance(pid=10, session_id="S", name="orchard", alive=True, status=head_status)
     inst.transcript = _transcript({"npm run deploy:dev": ("Deploy the stack to dev", now - 120)})
     worker = Agent(agent_id="w1", name="worker", status=agent_status,
                    transcript=_transcript({"pytest -q": ("Run the tests", now - 60)}))
@@ -86,7 +86,7 @@ def test_an_idle_session_running_its_own_shell_is_in_the_shell_state():
     Collector._attribute_shells(inst, [Shell(pid=20, started=now - 119, command="npm run deploy:dev")])
     assert inst.status == "shell" and worker.status == "dormant"
     sh = inst.shells[0]
-    assert sh.label == "Deploy the stack to dev" and sh.owner == "" and sh.owner_name == "payable"
+    assert sh.label == "Deploy the stack to dev" and sh.owner == "" and sh.owner_name == "orchard"
     assert main.look_of(inst) == main.SESSION_LOOK["idle"]          # drawn as idle, its shell beneath
 
 
@@ -203,7 +203,7 @@ def test_shells_get_rows_under_the_agent_that_started_them():
             assert label.plain.startswith(main.AgentTree.ICON_SHELL + "npm run deploy:dev")
             assert app.nodes["i:10/s:20"].label.spans[0].style == f"bold {main.GREEN}"
             # the shell ends: its row goes, and the worker has nothing left to fold
-            gone = Instance(pid=10, session_id="S", name="payable", alive=True, status="idle")
+            gone = Instance(pid=10, session_id="S", name="orchard", alive=True, status="idle")
             gone.transcript, gone.agents = inst.transcript, [Agent(agent_id="w1", name="worker", status="dormant",
                                                                   transcript=worker.transcript), old]
             snaps.append([gone])

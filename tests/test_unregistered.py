@@ -26,13 +26,13 @@ def test_permission_error_on_one_process_keeps_the_others(monkeypatch):
     procs = [
         FakeProc(1, "launchd"),
         FakeProc(2, "claude", error=PermissionError("force permission denied (KERN_PROCARGS2)")),
-        FakeProc(3, "claude", cmdline=["claude", "-n", "payable"]),
+        FakeProc(3, "claude", cmdline=["claude", "-n", "orchard"]),
         FakeProc(4, "claude", cmdline=["claude", "-n"]),          # dangling -n: no name, no crash
     ]
     monkeypatch.setattr(collector.psutil, "process_iter", lambda attrs: iter(procs))
     found = Collector._unregistered(known=set())
     assert [i.pid for i in found] == [3, 4]
-    assert found[0].name == "payable" and found[0].kind == "unregistered"
+    assert found[0].name == "orchard" and found[0].kind == "unregistered"
     assert found[1].name == ""
 
 
