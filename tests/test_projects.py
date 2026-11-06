@@ -425,21 +425,23 @@ def test_each_limit_week_in_the_graph_has_its_own_fill_under_every_measure(monke
     weeks = [back(d) for d in scan.days]
     assert set(weeks) == {0, 1, 2}
     last, earlier = main.HATCHES[1][0], main.HATCHES[2][0]
-    assert (last, earlier) == ("▓", "╳")
+    assert (last, earlier) == ("▊", "╳")
+    assert last not in "░▒▓"                # the app's terminal paints those as flat tints, with no gaps
     for measure in (0, 1):
         text = main.usage_text(scan, measure, 48, _report(), True, now=NOW)
         rows = _day_rows(text)
         for row, w in zip(rows, weeks):
             bar = row[11:]
-            assert (last in bar, earlier in bar, "█" in bar or "▏" in bar) == (w == 1, w == 2, w == 0)
+            cells = set(bar.split()[0])         # a solid bar can end in the same eighth as last week's fill
+            assert (cells == {last}, cells == {earlier}, "█" in cells or "▏" in cells) == (w == 1, w == 2, w == 0)
         lines = text.plain.splitlines()
         key = lines[lines.index(rows[-1]) + 1]
-        assert key == f"{last} last week · {earlier} two weeks ago"
+        assert key == f"{last * 2} last week · {earlier * 2} two weeks ago"
         assert all(len(line) <= 48 for line in lines)
     # only the weeks that are drawn are named
     only_last = DayScanner([0.0] * 3 + [1.0] * 11)
     lines = main.usage_text(only_last, 0, 48, _report(), True, now=NOW).plain.splitlines()
-    assert f"{last} last week" in lines and not any("two weeks ago" in line for line in lines)
+    assert f"{last * 2} last week" in lines and not any("two weeks ago" in line for line in lines)
 
 
 def test_without_a_current_week_nothing_is_hatched(monkeypatch):

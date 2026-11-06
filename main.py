@@ -1297,9 +1297,10 @@ class ExpiringPane(Widget, can_focus=True):
         self.post_message(self.Highlighted())
 
 
-# The daily graph spans three limit weeks: this one solid, the one before a dense shade, and
-# the one before that cross-hatched, so the denser the fill the closer the week.
-HATCHES = {1: ("▓", "last week"), 2: ("╳", "two weeks ago")}
+# The daily graph spans three limit weeks: this one solid, the one before in fine stripes, and
+# the one before that cross-hatched, so the denser the fill the closer the week. SwiftTerm paints
+# the shade glyphs (░▒▓) as flat tints, so a fill with gaps in it needs a narrower block instead.
+HATCHES = {1: ("▊", "last week"), 2: ("╳", "two weeks ago")}
 
 
 def _hatched_bar(frac: float, width: int, glyph: str) -> str:
@@ -1382,7 +1383,7 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
         t.append(f"{shown(v):>{val_w}}\n", style="bold" if (is_today or is_max) else "dim")
     drawn = sorted({min(2, weeks_back(d)) for d, v in zip(days, vals) if v} - {0})
     if drawn:
-        t.append(" · ".join(f"{HATCHES[b][0]} {HATCHES[b][1]}" for b in drawn) + "\n", style="dim")
+        t.append(" · ".join(f"{HATCHES[b][0] * 2} {HATCHES[b][1]}" for b in drawn) + "\n", style="dim")
 
     if split:
         t.append("\n")

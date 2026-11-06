@@ -253,7 +253,7 @@ The 14 days span three limit weeks, and a bar's fill says which:
 | fill | days |
 |------|------|
 | solid `█` | this week: the days the `week` bar counts |
-| dense shade `▓` | last week |
+| fine stripes `▊` | last week |
 | cross-hatch `╳` | the week before |
 
 The first measure, estimated limit use, gives each day's tokens the weights the project graph
