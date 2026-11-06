@@ -1,11 +1,11 @@
 # 🌾 agent-farm
 
-**Run a dozen Claude Code agents without babysitting a dozen tabs.**
+**Run a dozen Claude Code agents without dealing with a dozen tabs.**
 
-One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
-ago. Something ate a third of your week and you can't say what. agent-farm is a Mac app that
+Aaah!  One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
+ago. Something used a third of your weeks limit and you can't say what. agent-farm is a Mac app that
 puts your whole fleet in one window, with whatever needs you at the top, so your agents keep
-moving and you step in only where it counts.
+moving and you step in when needed.  Engineered for Claude Code and iTerm2.
 
 **[Download for Mac](https://github.com/djp3/agent-farm/releases/latest)** · macOS 13+ on
 Apple silicon · free and open source
@@ -15,7 +15,7 @@ Apple silicon · free and open source
 ### The agent that needs you is always on top
 
 Every session in iTerm2 and the Claude desktop app lands on one list, with whoever has waited
-longest first. Pick one, press `f`, and you're in its tab. Even the title bar pitches in: one
+longest first. Pick one, press `f`, and you're in its tab (this is surprisingly great). Even the title bar pitches in: one
 🐓 per session that's busy or waiting, so the Dock and the window switcher show how the farm
 is doing before you open it.
 
@@ -35,7 +35,7 @@ marks an even pace, so you know you're running hot while there's still time to s
 ### Never lose a session to the 30-day cleanup
 
 Claude Code quietly deletes sessions 30 days after their last use. agent-farm lists the ones
-going next, and one click (or `k`) gives any of them another 30 days.
+going next, and one click (or `k`) gives any of them another 30 days before purging their context.
 
 ### Installs nothing. Stays on your Mac.
 
@@ -113,7 +113,7 @@ place. On a non-Retina display a larger size or a font such as Menlo reads stead
 
 ### Reading a row
 
-Every row starts with exactly one icon, so names line up. Agents (sessions and subagents)
+Every row starts with exactly one icon. Agents (sessions and subagents)
 get triangles, shells a circle:
 
 | icon | meaning |
