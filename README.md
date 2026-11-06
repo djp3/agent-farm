@@ -3,7 +3,7 @@
 **Run a dozen Claude Code agents without dealing with a dozen tabs.**
 
 Aaah!  One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
-ago. Something used a third of your weeks limit and you can't say what. agent-farm is a Mac app that
+ago. Something used a third of your week's limit and you can't say what. agent-farm is a Mac app that
 puts your whole fleet in one window, with whatever needs you at the top, so your agents keep
 moving and you step in when needed.  Engineered for Claude Code and iTerm2.
 
