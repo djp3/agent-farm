@@ -43,7 +43,7 @@ No hooks, no plugins, no changes to your Claude Code setup. agent-farm reads the
 Code already writes, checks the process list, and listens to iTerm2 over one quiet connection,
 with a ♥ that beats each time it checks in. It sends none of your work anywhere: its only
 network traffic is a daily update check with GitHub and, if you turn plan limits on, the same
-usage request `/usage` makes. Apart from its own settings and log, the only thing it ever
+usage and credit balance requests Claude Code makes. Apart from its own settings and log, the only thing it ever
 changes is a session's file modification times, when you press keep.
 
 ## Install
@@ -276,9 +276,17 @@ reading, it says `reset` until the next fetch.
 
 - **Color.** Anthropic's reading of a window sets its color when the reply gives one;
   otherwise green turns orange at 75% and red at 90%.
-- **Pace.** A tick in each bar marks how far through its window the clock is, which is where
+- **Pace.** A white tick in each bar marks how far through its window the clock is, which is where
   an even pace would put you: a bar that stops short of the tick is using less than that, one
-  that runs past it more. Extra spend has no such clock and no tick.
+  that runs past it more. Extra spend has no such clock and no white tick.
+- **Credits.** The `extra` bar is this month's spend against your monthly cap. Where the other
+  rows end with the time left, it ends with the money left: your credit balance. A gold tick
+  marks where those credits run out, so a fill that reaches it has spent them. Its percent
+  follows the money rather than the cap: this month's spend out of that spend plus the
+  balance, so it reaches 100% as the fill reaches the tick. The bar turns orange at 75% of
+  that and red at 90%, or sooner if Anthropic's reading of the cap says so. Otherwise it is
+  drawn in the `week` bar's model colors: nothing records which models the money went to, so
+  the week's mix is an estimate.
 - **Models.** The `week` bar is split by model in the colors and textures of the
   output-by-model bar below, estimated the way the project graph is, with chats and Cowork in
   gray at its end. A model's week, such as Fable's, is drawn in that model's color. Either
@@ -291,12 +299,14 @@ reads the Claude Code sign-in from your Keychain (the item named `Claude Code-cr
 and asks Anthropic's usage endpoint when you open the panel, then again as soon as a session
 or subagent has worked since the last fetch, at most once every five minutes. While everyone
 is idle or waiting for you no request goes out and the header says paused, since the numbers
-cannot move. macOS may ask you to allow the Keychain read.
+cannot move. While extra spend is on, each fetch also asks for your credit balance, which has
+an endpoint of its own. macOS may ask you to allow the Keychain read.
 
 The sign-in is used as is, never renewed, never written anywhere and never logged; when it
-has expired, the block says so until Claude Code renews it. The plan's name in the header
-comes from the profile Claude Code keeps in `~/.claude.json`, the only value taken from that
-file. The block is off by default, and while it is off it makes no network request.
+has expired, the block says so until Claude Code renews it. The plan's name in the header and
+the organization ID the balance request needs come from the profile Claude Code keeps in
+`~/.claude.json`, the only values taken from that file. The block is off by default, and while
+it is off it makes no network request.
 
 **Projects.** Press `p` for how the week's percent was spent, on its own or below the usage
 graph: one row per GitHub repo, largest first, with the five largest named. The rows add up

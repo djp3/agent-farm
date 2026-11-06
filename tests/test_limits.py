@@ -46,6 +46,7 @@ ULTRA_REPLY = {
               "percent": 0, "severity": "normal", "enabled": True, "disabled_reason": None},
 }
 TOKEN = "sk-ant-oat01-SECRET-TOKEN-VALUE"
+ORG = "00000000-0000-4000-8000-000000000000"
 CREDS = json.dumps({"claudeAiOauth": {"accessToken": TOKEN, "expiresAt": 4102444800000,
                                       "subscriptionType": "max"}})
 
@@ -189,21 +190,25 @@ def test_credentials_parse_milliseconds_and_reject_other_shapes():
     assert limits._parse_credentials('{"claudeAiOauth": {"accessToken": 5}}') is None
 
 
-def test_plan_name_comes_from_the_profile_and_only_that_is_read(tmp_path, monkeypatch, caplog):
+def test_plan_name_and_org_come_from_the_profile_and_nothing_else_is_read(tmp_path, monkeypatch, caplog):
     creds, config = tmp_path / ".credentials.json", tmp_path / ".claude.json"
     creds.write_text(CREDS)
     monkeypatch.setattr(limits, "CREDENTIALS_FILE", creds)
     monkeypatch.setattr(limits, "GLOBAL_CONFIG", config)
     assert limits.load_token()[0].plan == "max"                        # no file: the sign-in's type
-    config.write_text(json.dumps({"oauthAccount": {"planDisplayName": "Ultra", "emailAddress": "me@example.com"}}))
+    config.write_text(json.dumps({"oauthAccount": {"planDisplayName": "Ultra", "organizationUuid": ORG,
+                                                   "emailAddress": "me@example.com"}}))
     with caplog.at_level(logging.DEBUG, logger="agent_farm.limits"):
         tok, why = limits.load_token()
-    assert (tok.plan, tok.value, why) == ("ultra", TOKEN, "")
-    assert "me@example.com" not in caplog.text and "Ultra" not in caplog.text
+    assert (tok.plan, tok.org, tok.value, why) == ("ultra", ORG, TOKEN, "")
+    assert all(s not in caplog.text for s in ("me@example.com", "Ultra", ORG))
     for odd in ("{not json", "[]", '{"oauthAccount": null}', '{"oauthAccount": {"planDisplayName": 7}}',
                 '{"oauthAccount": {"planDisplayName": ""}}'):
         config.write_text(odd)
         assert limits.load_token()[0].plan == "max"
+    for odd in (7, "", 'x"\nurl = "http://elsewhere', ORG + "0"):              # it goes into a request
+        config.write_text(json.dumps({"oauthAccount": {"organizationUuid": odd}}))
+        assert limits.load_token()[0].org == ""
 
 
 def test_token_goes_to_curl_on_stdin_never_in_argv(monkeypatch):
@@ -214,9 +219,174 @@ def test_token_goes_to_curl_on_stdin_never_in_argv(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(REPLY) + "\n200", stderr="")
     monkeypatch.setattr(limits.subprocess, "run", fake_run)
     assert fetch_usage(TOKEN) == (REPLY, "")
-    assert seen["cmd"][0] == limits.CURL and seen["cmd"][-1] == limits.USAGE_URL
+    assert seen["cmd"][0] == limits.CURL and f'url = "{limits.USAGE_URL}"' in seen["input"]
     assert all(TOKEN not in a for a in seen["cmd"])
     assert f"Bearer {TOKEN}" in seen["input"] and limits.OAUTH_BETA in seen["input"]
+
+
+def test_credit_balance_is_asked_for_by_organization_and_stays_out_of_argv(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["input"] = cmd, kw.get("input", "")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"amount": 2550, "currency": "USD"}) + "\n200",
+                                           stderr="")
+    monkeypatch.setattr(limits.subprocess, "run", fake_run)
+    assert limits.fetch_credits(TOKEN, ORG) == 2550
+    assert all(TOKEN not in a and ORG not in a for a in seen["cmd"])
+    assert f'url = "{limits.CREDITS_URL.format(org=ORG)}"' in seen["input"]
+    assert f"x-organization-uuid: {ORG}" in seen["input"] and f"Bearer {TOKEN}" in seen["input"]
+
+
+def test_a_balance_that_cannot_be_read_as_dollars_is_no_balance(monkeypatch):
+    def replying(body, code="200"):
+        monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, stdout=f"{body}\n{code}", stderr=""))
+        return limits.fetch_credits(TOKEN, ORG)
+    assert replying('{"amount": 2550, "currency": "EUR"}') is None
+    assert replying('{"amount": null, "currency": "USD"}') is None
+    assert replying('{"amount": true, "currency": "USD"}') is None
+    assert replying('{"currency": "USD"}') is None
+    assert replying("[]") is None
+    assert replying("{}", "403") is None
+    assert replying('{"amount": 0, "currency": "USD"}') == 0
+
+
+def test_the_spend_bar_ends_with_the_money_left_and_a_tick_where_it_runs_out():
+    now = datetime(2026, 11, 3, 7, 0, tzinfo=timezone.utc).timestamp()
+    rep = parse_report(ULTRA_REPLY, "ultra", now, balance=2550)         # $25.50 against a $100 cap
+    extra = rep.windows[-1]
+    assert (extra.label, extra.money_left, extra.credits_out) == ("extra", "$25.50", 0.255)
+    assert all(not w.money_left and w.credits_out is None for w in rep.windows[:-1])
+    lines = main.limits_text(rep, True, 48, now=now).plain.splitlines()
+    assert lines[3].startswith("extra") and lines[3].endswith("  0%  $25.50") and main.PACE_TICK in lines[3]
+    assert all(len(line) <= 48 for line in lines)
+    assert len(lines[3]) == len(lines[1])                               # the same columns as the time left
+
+
+def test_the_credits_tick_holds_still_as_they_are_spent_and_leaves_past_the_cap():
+    def extra(used, balance, cap=10000):
+        reply = dict(ULTRA_REPLY, extra_usage=dict(ULTRA_REPLY["extra_usage"], used_credits=used, monthly_limit=cap))
+        return parse_report(reply, "", 1.0, balance=balance).windows[-1]
+    assert extra(0, 2550).credits_out == extra(1000, 1550).credits_out == 0.255
+    assert extra(2550, 0).credits_out == 0.255                          # all spent: the fill has reached it
+    assert extra(0, 0).credits_out == 0.0
+    assert extra(0, 10000).credits_out is None and extra(0, 25000).credits_out is None
+    assert extra(0, 2550, cap=None).credits_out is None                 # no cap to measure against
+    assert extra(0, 25000).money_left == "$250"
+
+
+def test_the_spend_percent_follows_the_funded_money_while_the_bar_stays_on_the_cap():
+    now = datetime(2026, 11, 3, 7, 0, tzinfo=timezone.utc).timestamp()
+
+    def report(used, balance, percent):
+        reply = dict(ULTRA_REPLY, extra_usage=dict(ULTRA_REPLY["extra_usage"], used_credits=used),
+                     spend=dict(ULTRA_REPLY["spend"], percent=percent))
+        return parse_report(reply, "", now, balance=balance)
+    rep = report(1000, 1500, 10)                                        # $10 spent, $15 left, a $100 cap
+    extra = rep.windows[-1]
+    assert (extra.used_pct, extra.funded_pct, extra.credits_out) == (10, 40, 0.25)
+    line = main.limits_text(rep, True, 48, now=now).plain.splitlines()[3]
+    assert line.startswith("extra") and line.endswith(" 40%  $15.00")
+    bar = line.removeprefix("extra").split(" 40%")[0].strip()
+    plain = main._limit_bar(10, len(bar), credits_out=0.25).plain       # the fill is still 10% of the bar
+    assert bar == plain and bar.index(main.PACE_TICK) == int(0.25 * len(bar))
+
+    def shown(used, balance, percent=0):
+        return main.limits_text(report(used, balance, percent), True, 48, now=now).plain.splitlines()[3]
+    assert shown(0, 2500).endswith("  0%  $25.00")
+    assert shown(2500, 0, 25).endswith("100%   $0.00")                   # all spent
+    assert shown(2499, 1, 25).endswith(" 99%   $0.01")                   # not all spent: it never rounds up to 100
+    assert shown(0, 0, 0).endswith("  0%   $0.00")                       # nothing funded, nothing to divide
+
+
+def test_without_a_balance_the_spend_percent_is_the_caps():
+    reply = dict(ULTRA_REPLY, spend=dict(ULTRA_REPLY["spend"], percent=30),
+                 extra_usage=dict(ULTRA_REPLY["extra_usage"], used_credits=3000))
+    rep = parse_report(reply, "", 1.0)
+    assert rep.windows[-1].funded_pct is None
+    assert main.limits_text(rep, True, 48, now=1.0).plain.splitlines()[3].endswith(" 30%")
+
+
+def test_the_money_running_low_turns_the_spend_bar_orange_then_red():
+    def severity(used, balance, server="normal"):
+        reply = dict(ULTRA_REPLY, extra_usage=dict(ULTRA_REPLY["extra_usage"], used_credits=used),
+                     spend=dict(ULTRA_REPLY["spend"], severity=server))
+        return parse_report(reply, "", 1.0, balance=balance).windows[-1].severity
+    assert severity(7400, 2600) == "normal"
+    assert severity(7500, 2500) == "warning"
+    assert severity(8900, 1100) == "warning"
+    assert severity(9000, 1000) == "critical"
+    assert severity(100, 9900, "warning") == "warning"                  # the cap's reading still counts
+    assert severity(100, 9900, "critical") == "critical"
+    assert severity(8000, 2000, "critical") == "critical"               # whichever is worse
+    assert severity(0, 0) == "normal"                                   # nothing funded: no share to read
+
+
+def test_the_spend_bar_takes_the_weeks_model_colors_until_it_needs_attention():
+    now = datetime(2026, 11, 3, 7, 0, tzinfo=timezone.utc).timestamp()
+    parts = [("#111111", "█", 0.5), ("#222222", "▓", 0.5)]
+
+    def extra_row(used, balance):
+        reply = dict(ULTRA_REPLY, extra_usage=dict(ULTRA_REPLY["extra_usage"], used_credits=used),
+                     spend=dict(ULTRA_REPLY["spend"], percent=used / 100))
+        t = main.limits_text(parse_report(reply, "", now, balance=balance), True, 48, now=now, week_parts=parts)
+        start = t.plain.index("extra")
+        end = t.plain.index("\n", start)
+        return t.plain[start:end], {str(sp.style) for sp in t.spans if start <= sp.start < end}
+    line, styles = extra_row(5000, 45000)                               # 10% of the money: calm
+    assert {"#111111", "#222222"} <= styles and "▓" in line
+    assert "bold" not in styles
+    line, styles = extra_row(5000, 1000)                                # 83%: orange, as a whole
+    assert main.LIMIT_WARN in styles and not {"#111111", "#222222"} & styles and "▓" not in line
+    assert line.endswith(" 83%  $10.00") and "bold" in styles
+    line, styles = extra_row(5000, 500)                                 # 90%: red, as a whole
+    assert main.LIMIT_OVER in styles and not {"#111111", "#222222"} & styles
+
+
+def test_money_fits_the_column_beside_a_bar():
+    for cents, shown in ((0, "$0.00"), (450, "$4.50"), (9999, "$99.99"), (10000, "$100"), (123456, "$1235")):
+        assert limits._money(cents) == shown and len(shown) <= 6
+
+
+def test_the_credits_tick_has_its_own_color():
+    def style_of_tick(bar):
+        i = bar.plain.index(main.PACE_TICK)
+        return i, next(sp.style for sp in bar.spans if sp.start <= i < sp.end)
+    assert style_of_tick(main._limit_bar(0, 20, credits_out=0.255)) == (5, main.CREDIT_TICK)
+    assert main.CREDIT_TICK != main.PACE_TICK_ON_TRACK and main.CREDIT_TICK not in (main.LIMIT_WARN, main.LIMIT_OVER)
+    assert style_of_tick(main._limit_bar(0, 20, elapsed=0.5)) == (10, main.PACE_TICK_ON_TRACK)
+    assert main.PACE_TICK not in main._limit_bar(0, 20, credits_out=None).plain
+
+
+def test_the_balance_is_only_asked_for_while_the_spend_is_on(monkeypatch):
+    asked = []
+
+    def credits(token, org):
+        asked.append(org)
+        return 2550
+    monkeypatch.setattr(limits, "fetch_credits", credits)
+
+    def refreshed(reply, org):
+        monkeypatch.setattr(limits, "load_token", lambda: (limits._Token(TOKEN, 0.0, "max", org), ""))
+        monkeypatch.setattr(limits, "fetch_usage", lambda token: (reply, ""))
+        pl = PlanLimits()
+        pl.refresh()
+        return pl.report()
+    assert refreshed(ULTRA_REPLY, ORG).windows[-1].money_left == "$25.50" and asked == [ORG]
+    asked.clear()
+    assert not refreshed(REPLY, ORG).error and asked == []              # spend is off
+    assert refreshed(ULTRA_REPLY, "").windows[-1].money_left == "" and asked == []      # no organization known
+
+
+def test_a_failed_balance_leaves_the_spend_bar_and_the_panel_without_an_error(monkeypatch):
+    monkeypatch.setattr(limits, "load_token", lambda: (limits._Token(TOKEN, 0.0, "max", ORG), ""))
+    monkeypatch.setattr(limits, "fetch_usage", lambda token: (ULTRA_REPLY, ""))
+    monkeypatch.setattr(limits, "fetch_credits", lambda token, org: None)
+    pl = PlanLimits()
+    pl.refresh()
+    extra = pl.report().windows[-1]
+    assert not pl.report().error and (extra.label, extra.money_left, extra.credits_out) == ("extra", "", None)
 
 
 def test_http_401_means_the_sign_in_expired(monkeypatch):

@@ -44,7 +44,7 @@ from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instanc
 from apppaths import app_version
 from expiring import DAY, DEFAULT_PERIOD_DAYS, Expiring, ExpiryScanner
 from expiring import WINDOW_DAYS as EXPIRY_DAYS
-from limits import WEEK_S, LimitsReport, PlanLimits, Window
+from limits import EXTRA_LABEL, OVER_PCT, WARN_PCT, WEEK_S, LimitsReport, PlanLimits, Window
 from ordering import DEFAULT_ORDERING, ORDERINGS, Ordering, get_ordering
 from projects import project_label
 from settings import Settings
@@ -809,13 +809,15 @@ def _bar(frac: float, width: int) -> str:
 PACE_TICK = "┃"
 PACE_TICK_ON_TRACK = "bold #ffffff"
 PACE_TICK_NOTCH = "#121212"   # the panel background, so over the fill the tick is a gap cut into it
+CREDIT_TICK = f"bold {YELLOW}"   # where the credits run out: a different promise from the white pace tick
 SEVERITY_HUES = {"normal": BAR_HUE_TODAY, "warning": LIMIT_WARN, "critical": LIMIT_OVER}
 
 
 def _limit_hue(pct: float, severity: str = "", calm: str = BAR_HUE_TODAY) -> str:
     """The server's reading of a window when it gives one, else orange from 75% and red from
     90%. A window that needs no attention wears `calm`."""
-    hue = SEVERITY_HUES.get(severity) or (LIMIT_OVER if pct >= 90 else LIMIT_WARN if pct >= 75 else BAR_HUE_TODAY)
+    hue = SEVERITY_HUES.get(severity) or (LIMIT_OVER if pct >= OVER_PCT else LIMIT_WARN if pct >= WARN_PCT
+                                          else BAR_HUE_TODAY)
     return calm if hue == BAR_HUE_TODAY else hue
 
 
@@ -829,14 +831,17 @@ def _calm_hue(label: str, hues: dict[str, str]) -> str:
 
 
 def _limit_bar(pct: float, width: int, elapsed: float | None = None, severity: str = "",
-               calm: str = BAR_HUE_TODAY, parts: list[tuple[str, str, float]] | None = None) -> Text:
+               calm: str = BAR_HUE_TODAY, parts: list[tuple[str, str, float]] | None = None,
+               credits_out: float | None = None) -> Text:
     """A budget bar: the used share in its hue (_limit_hue) over a dim track so the unused
     share stays visible (the percent beside it says the same). With `parts` ((hue, glyph,
     share of the fill), as the output-by-model bar draws models) a bar that needs no attention
     is split between them; one that does is drawn whole in orange or red.
     `elapsed` (0..1, how far through its window the clock is) adds a tick where an even
     pace would be: fill that stops short of the tick is under pace, fill past it is ahead.
-    Over the fill the tick is a notch, over the track a bright line."""
+    Over the fill the tick is a notch, over the track a bright line.
+    `credits_out` (0..1, where the credits run out, on a bar with no clock) puts the tick
+    there instead, in its own color: a fill that reaches it has spent them."""
     hue = _limit_hue(pct, severity, calm)
     fill = max(0.0, min(1.0, pct / 100)) * width
     if parts and hue == calm:
@@ -844,11 +849,12 @@ def _limit_bar(pct: float, width: int, elapsed: float | None = None, severity: s
     else:
         filled = [(ch, hue) for ch in _bar(pct / 100, width).rstrip()]
     cells = filled + [("·", "dim")] * (width - len(filled))
-    if elapsed is not None and width > 0:
-        i = min(width - 1, int(elapsed * width))
+    tick, on_track = (elapsed, PACE_TICK_ON_TRACK) if credits_out is None else (credits_out, CREDIT_TICK)
+    if tick is not None and width > 0:
+        i = min(width - 1, int(tick * width))
         whole = int(fill)                                            # cells filled edge to edge
         cells[i] = (PACE_TICK, Style(color=PACE_TICK_NOTCH, bgcolor=Style.parse(cells[i][1]).color)
-                    if i < whole else PACE_TICK_ON_TRACK)
+                    if i < whole else on_track)
     t = Text()
     for style, run in groupby(cells, key=lambda c: c[1]):
         t.append("".join(ch for ch, _ in run), style=style)
@@ -916,15 +922,17 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     if not rep.windows:
         return t
     label_w = max(len(w.label) for w in rep.windows)
-    reset_w = 6                                         # "13h05m" left until the window resets
+    reset_w = 6                                         # "13h05m" left until the window resets, or "$12.50"
     bar_w = max(8, width - label_w - 1 - 1 - 4 - 2 - reset_w)
     for w in rep.windows:
         t.append(f"{w.label:<{label_w}} ", style="dim")
+        # Nothing says which models the extra spend went to, so the week's mix is its estimate too.
         t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now), w.severity, _calm_hue(w.label, hues or {}),
-                                 week_parts if w.label == "week" else None))
+                                 week_parts if w.label in ("week", EXTRA_LABEL) else None, w.credits_out))
         calm = _limit_hue(w.used_pct, w.severity) == BAR_HUE_TODAY
-        t.append(f" {int(w.used_pct):>3}%", style="" if calm else "bold")
-        left = fmt_countdown(w.resets_at, now)
+        shown = w.used_pct if w.funded_pct is None else w.funded_pct
+        t.append(f" {int(shown):>3}%", style="" if calm else "bold")
+        left = fmt_countdown(w.resets_at, now) or w.money_left
         if left:
             t.append(f"  {left:>{reset_w}}", style="dim")
         t.append("\n")

@@ -1,26 +1,28 @@
 """
 Plan limits: the rate-limit windows that Claude Code's /usage screen shows. Which ones a
 plan has is up to the server: the current 7-day week, per-model weeks, a 5-hour session on
-plans that have one, and pay-as-you-go spend when it is on.
+plans that have one, and pay-as-you-go spend when it is on, with the credit balance behind it.
 
 Nothing about these windows lands on disk. Claude Code fetches them from Anthropic's OAuth
-usage endpoint with the sign-in token it keeps in the macOS Keychain, so this module does
-the same fetch, read-only and opt-in (Settings → plan limits):
+endpoints with the sign-in token it keeps in the macOS Keychain, so this module does the same
+fetches, read-only and opt-in (Settings → plan limits):
   • the token is read from the Keychain item "Claude Code-credentials" (or from the
     credentials file Claude Code uses where there is no Keychain). It is never refreshed,
     logged or written anywhere, and it reaches curl on stdin so it never shows in `ps`
   • the request goes through the system curl so TLS uses the macOS trust store; the
     bundled Python only knows Homebrew's certificate path, which other Macs lack
-  • only percentages, reset times, surface names and the server's color reading are kept
-    from the reply; the body is never logged
-  • the panel names the plan from Claude Code's profile in ~/.claude.json; that file holds
-    much else, so this takes the one key and logs nothing from it
+  • only percentages, reset times, surface names, the server's color reading and the credit
+    balance are kept from the replies; the bodies are never logged
+  • the panel names the plan from Claude Code's profile in ~/.claude.json, and the balance
+    request needs the organization's ID from there; that file holds much else, so this takes
+    those two keys and logs nothing from them
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -38,6 +40,8 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 GLOBAL_CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home())) / ".claude.json"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CREDITS_URL = "https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits"
+ORG_ID = re.compile(r"[0-9a-fA-F-]{36}")
 OAUTH_BETA = "oauth-2025-04-20"
 HTTP_TIMEOUT_S = 15
 KEYCHAIN_TIMEOUT_S = 120        # macOS may be showing the user an allow/deny dialog
@@ -59,6 +63,7 @@ LABEL_MAX = 20                  # a label from the server must leave room for it
 # Pay-as-you-go spend, which has no clock. "extra_usage" has the switch; newer replies leave
 # its utilization null and give the share in "spend".
 EXTRA_KEY, EXTRA_LABEL, SPEND_KEY = "extra_usage", "extra", "spend"
+WARN_PCT, OVER_PCT = 75, 90     # where a bar with no reading from the server turns orange, then red
 EXPIRED = "sign-in expired; open Claude Code to refresh it"
 
 
@@ -70,6 +75,9 @@ class Window:
     resets_at: datetime | None      # timezone-aware, or None when the API gives none
     span_s: float = 0.0             # window length in seconds; 0 = no clock or an unknown length
     severity: str = ""              # the server's reading for the bar's color, when it gives one
+    money_left: str = ""            # the credit balance, on the spend bar
+    credits_out: float | None = None    # where on the spend bar the credits run out, 0..1
+    funded_pct: float | None = None     # the spend bar's percent: of the money there is to spend, not the cap
 
     def elapsed(self, now: float) -> float | None:
         """How far through its window the clock is, 0..1, taking the window to end at
@@ -96,6 +104,7 @@ class _Token:
     value: str
     expires_at: float               # epoch seconds; 0 = unknown
     plan: str
+    org: str = ""                   # the organization's ID, for the credit balance
 
 
 def _parse_credentials(blob: str) -> _Token | None:
@@ -114,14 +123,26 @@ def _parse_credentials(blob: str) -> _Token | None:
     return _Token(oauth["accessToken"], expires, str(oauth.get("subscriptionType") or ""))
 
 
-def _plan_name(fallback: str) -> str:
-    """The plan's name from the profile Claude Code keeps ("Ultra"). The sign-in only knows
-    the subscription type it was issued under, which stays "max" for a renamed plan."""
+def _profile_value(key: str) -> str:
+    """One string from the profile Claude Code keeps, or "" when it isn't there."""
     try:
-        name = json.loads(GLOBAL_CONFIG.read_text())["oauthAccount"]["planDisplayName"]
+        value = json.loads(GLOBAL_CONFIG.read_text())["oauthAccount"][key]
     except (OSError, ValueError, KeyError, TypeError):
-        return fallback
-    return clean_text(name).lower() if isinstance(name, str) and name else fallback
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _plan_name(fallback: str) -> str:
+    """The plan's name from the profile ("Ultra"). The sign-in only knows the subscription
+    type it was issued under, which stays "max" for a renamed plan."""
+    name = _profile_value("planDisplayName")
+    return clean_text(name).lower() if name else fallback
+
+
+def _org_id() -> str:
+    """The organization's ID from the profile. It goes into a request, so only that shape will do."""
+    org = _profile_value("organizationUuid")
+    return org if ORG_ID.fullmatch(org) else ""
 
 
 def load_token() -> tuple[_Token | None, str]:
@@ -151,17 +172,19 @@ def load_token() -> tuple[_Token | None, str]:
     tok = _parse_credentials(blob)
     if tok is None:
         return None, f"unexpected {source} format"
-    return replace(tok, plan=_plan_name(tok.plan)), ""
+    return replace(tok, plan=_plan_name(tok.plan), org=_org_id()), ""
 
 
-def fetch_usage(token: str) -> tuple[dict | None, str]:
-    """GET the usage endpoint through the system curl. The token travels in a curl config
+def _fetch_json(url: str, token: str, *headers: str) -> tuple[dict | None, str]:
+    """GET a JSON reply through the system curl. The URL and token travel in a curl config
     on stdin, never in the argument list. Returns (reply, reason)."""
-    config = (f'header = "Authorization: Bearer {token}"\n'
+    config = (f'url = "{url}"\n'
+              f'header = "Authorization: Bearer {token}"\n'
               f'header = "anthropic-beta: {OAUTH_BETA}"\n'
-              'header = "Accept: application/json"\n')
+              'header = "Accept: application/json"\n'
+              + "".join(f'header = "{h}"\n' for h in headers))
     cmd = [CURL, "--silent", "--show-error", "--config", "-", "--max-time", str(HTTP_TIMEOUT_S),
-           "--write-out", "\n%{http_code}", USAGE_URL]
+           "--write-out", "\n%{http_code}"]
     try:
         r = subprocess.run(cmd, input=config, capture_output=True, text=True, timeout=HTTP_TIMEOUT_S + 5)
     except subprocess.TimeoutExpired:
@@ -183,6 +206,19 @@ def fetch_usage(token: str) -> tuple[dict | None, str]:
         return None, "unreadable reply"
     log.debug("plan limits: reply keys %s", sorted(data))         # names only, never values
     return data, ""
+
+
+def fetch_usage(token: str) -> tuple[dict | None, str]:
+    return _fetch_json(USAGE_URL, token)
+
+
+def fetch_credits(token: str, org: str) -> float | None:
+    """The prepaid credit balance in cents, which the usage reply leaves out, or None when it
+    can't be told. Dollars are the one currency this has seen, so no other is read as them."""
+    data, _ = _fetch_json(CREDITS_URL.format(org=org), token, f"x-organization-uuid: {org}")
+    if not data or data.get("currency") != "USD" or _pct(data.get("amount")) is None:
+        return None
+    return max(0.0, float(data["amount"]))
 
 
 def _parse_ts(value) -> datetime | None:
@@ -255,9 +291,44 @@ def _row_windows(rows) -> list[Window]:
     return list(out.values())
 
 
-def _extra_window(data: dict) -> Window | None:
+def _money(cents: float) -> str:
+    """Dollars for the six characters beside a bar, so no cents from $100 up."""
+    return f"${cents / 100:.2f}" if cents < 10000 else f"${cents / 100:.0f}"
+
+
+def _credits_out(extra: dict, balance: float) -> float | None:
+    """Where on the spend bar the credits run out: what has been spent plus what is left, on
+    the monthly cap's scale, so it holds still as they are spent. None at or past the cap."""
+    used, cap = extra.get("used_credits"), extra.get("monthly_limit")               # both in cents
+    if _pct(used) is None or _pct(cap) is None or cap <= 0:
+        return None
+    out = (used + balance) / cap
+    return out if out < 1 else None
+
+
+def _funded_pct(extra: dict, balance: float) -> float | None:
+    """How much of the money there is to spend has gone: what has been spent, of that plus
+    what is left. It reaches 100 as the bar's fill reaches the credits tick. None with nothing
+    spent or left, when there is no such share."""
+    used = extra.get("used_credits")                                                # in cents
+    if _pct(used) is None or used + balance <= 0:
+        return None
+    return _pct(used / (used + balance) * 100)
+
+
+def _spend_severity(server: str, funded: float | None) -> str:
+    """The spend bar's color reading. The server's is of the cap, so the money can run low
+    while it still says normal: the worse of the two counts."""
+    if funded is None:
+        return server
+    if funded >= OVER_PCT or server == "critical":
+        return "critical"
+    return "warning" if funded >= WARN_PCT or server == "warning" else server
+
+
+def _extra_window(data: dict, balance: float | None = None) -> Window | None:
     """Pay-as-you-go spend when the account has it on and a share of a limit can be told:
-    an unlimited account has none."""
+    an unlimited account has none. `balance` is the credit balance in cents, when known."""
     extra, spend = data.get(EXTRA_KEY), data.get(SPEND_KEY)
     extra = extra if isinstance(extra, dict) else {}
     spend = spend if isinstance(spend, dict) else {}
@@ -272,15 +343,20 @@ def _extra_window(data: dict) -> Window | None:
             return None
         pct = _pct(used / cap * 100)
     severity = spend.get("severity")
-    return Window(EXTRA_KEY, EXTRA_LABEL, pct, None, severity=severity if isinstance(severity, str) else "")
+    funded = None if balance is None else _funded_pct(extra, balance)
+    return Window(EXTRA_KEY, EXTRA_LABEL, pct, None,
+                  severity=_spend_severity(severity if isinstance(severity, str) else "", funded),
+                  money_left="" if balance is None else _money(balance),
+                  credits_out=None if balance is None else _credits_out(extra, balance),
+                  funded_pct=funded)
 
 
-def parse_report(data: dict, plan: str, now: float) -> LimitsReport:
+def parse_report(data: dict, plan: str, now: float, balance: float | None = None) -> LimitsReport:
     rows = _row_windows(data.get("limits"))
     shown = {w.label for w in rows}
     wins = [w for w in _key_windows(data) if w.label not in shown] + rows
     wins.sort(key=lambda w: {"session": 0, "week": 1}.get(w.label, 2))      # the rest keep their order
-    extra = _extra_window(data)
+    extra = _extra_window(data, balance)
     if extra is not None:
         wins.append(extra)
     if not wins:
@@ -321,7 +397,9 @@ class PlanLimits:
                 if why == EXPIRED:
                     self._token = None                 # re-read the sign-in next time
                 return self._set(replace(cur, error=why))
-            return self._set(parse_report(data, tok.plan, now))
+            # Without a balance the spend bar still reads, so a failure here is no error for the panel.
+            balance = fetch_credits(tok.value, tok.org) if tok.org and _extra_window(data) else None
+            return self._set(parse_report(data, tok.plan, now, balance))
 
     def _set(self, rep: LimitsReport) -> bool:
         changed = rep != self._report
