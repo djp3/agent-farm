@@ -61,7 +61,8 @@ _monotonic = time.monotonic   # the plan-limit gate's clock; tests replace this,
 LIMITS_REDRAW_S = 60.0  # while idle nothing else redraws the panel; keep its age and "paused" current
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
-USAGE_PANEL_WIDTH = 50 # must match the #usage width in CSS
+USAGE_MIN_W = 32        # the usage column at its narrowest: its text stops shrinking at 30
+LEFT_MIN_W = 40         # a dragged divider leaves the session list at least this wide
 # Terminal title: the Mac app shows it in its title bar, iTerm2 in its tab. The in-app
 # header keeps the plain TITLE because terminal fonts render emoji unevenly. After the
 # name, one chicken per live session that is not idle (busy or waiting).
@@ -1505,6 +1506,47 @@ class UsageScroll(VerticalScroll, can_focus=False):
     """The wheel scrolls it; tab goes on from the tree to the expiring pane."""
 
 
+class Divider(Widget):
+    """The line between the columns. Dragging it with the left button sets the usage column's
+    width: the app sizes the column on each move and keeps the width once the button is up."""
+
+    class Dragged(Message):
+        def __init__(self, screen_x: int, done: bool) -> None:
+            super().__init__()
+            self.screen_x, self.done = screen_x, done
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._dragging = False
+        self._last_x = 0
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 1:
+            self._dragging, self._last_x = True, event.screen_x
+            self.capture_mouse()
+            self.add_class("-dragging")
+            event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._dragging:
+            self._last_x = event.screen_x
+            self.post_message(self.Dragged(event.screen_x, done=False))
+            event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._dragging:
+            self._last_x = event.screen_x
+            self.release_mouse()                    # and on_mouse_release ends the drag
+            event.stop()
+
+    def on_mouse_release(self, event: events.MouseRelease) -> None:
+        """The capture ended, by the button coming up or by anything else taking it."""
+        if self._dragging:
+            self._dragging = False
+            self.remove_class("-dragging")
+            self.post_message(self.Dragged(self._last_x, done=True))
+
+
 class AgentFarm(App):
     TITLE = "agent-farm"
     SUB_TITLE = f"v{VERSION}" if VERSION else ""       # the header reads "agent-farm — v0.2.4"
@@ -1518,8 +1560,11 @@ class AgentFarm(App):
        they all read on, not Textual's bright blue with its own text color. */
     #tree > .tree--cursor { background: #18283a; text-style: bold; }
     #tree:focus > .tree--cursor { background: #1f3b5c; text-style: bold; }
-    #usage { width: 50; height: 1fr; border-left: solid $primary-darken-2; }
+    #usage { height: 1fr; }                     /* its width is the setting, held to the window */
     #usage.hidden { display: none; }
+    Divider { width: 1; height: 1fr; border-left: solid $primary-darken-2; }
+    Divider:hover, Divider.-dragging { border-left: solid $primary-lighten-2; }
+    Divider.hidden { display: none; }
     /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
     #usage-scroll { height: 1fr; scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
     #usage-scroll.hidden { display: none; }
@@ -1604,6 +1649,7 @@ class AgentFarm(App):
                 expiring = ExpiringPane(id="expiring")
                 expiring.styles.height = BOTTOM_ROWS
                 yield expiring
+            yield Divider(id="divider")
             with Vertical(id="usage"):                  # scrolls above; the farm chart stays put below
                 with UsageScroll(id="usage-scroll"):
                     yield Static("", id="usage-body")
@@ -1635,7 +1681,8 @@ class AgentFarm(App):
         self._tick_limits(force=True)          # later fetches follow the work seen in each snapshot
 
     def on_resize(self) -> None:
-        self._apply_detail_visibility()
+        # The app's size is still the old one while this runs, so lay out once it has moved on.
+        self.call_after_refresh(self._apply_detail_visibility)
 
     def _set_window_title(self, title: str) -> None:
         driver = self._driver
@@ -1660,6 +1707,8 @@ class AgentFarm(App):
         show_u = self._panel_open()
         usage = self.query_one("#usage")
         usage.set_class(not show_u, "hidden")
+        self.query_one("#divider", Divider).set_class(not show_u, "hidden")
+        usage.styles.width = self._fit_usage_width(self.settings.usage_width)
         self.query_one("#usage-scroll").set_class(not self.usage_forced, "hidden")
         projects = self.query_one("#projects", Static)
         projects.set_class(not self.projects_forced, "hidden")
@@ -1793,9 +1842,23 @@ class AgentFarm(App):
             self._on_ui(self.render_usage)
 
     def _usage_text_width(self) -> int:
-        """Columns for text in the usage column: its width inside the border, less padding."""
+        """Columns for text in the usage column: its width, less padding and the scroll gutter."""
         usage = self.query_one("#usage")
-        return max(30, (usage.size.width or USAGE_PANEL_WIDTH - 1) - 2)
+        return max(30, (usage.size.width or self._fit_usage_width(self.settings.usage_width)) - 2)
+
+    def _fit_usage_width(self, width: int) -> int:
+        """A usage column width held to the column's narrowest and to what leaves the session
+        list its room. The divider takes the column between them."""
+        return max(USAGE_MIN_W, min(width, self.size.width - 1 - LEFT_MIN_W))
+
+    def on_divider_dragged(self, message: Divider.Dragged) -> None:
+        """The usage column runs from just right of the divider to the window's edge. A
+        narrower window later holds it back without forgetting the width set here."""
+        self.settings.usage_width = self._fit_usage_width(self.size.width - 1 - message.screen_x)
+        if message.done:
+            self.settings.save()
+        self.query_one("#usage").styles.width = self.settings.usage_width
+        self.call_after_refresh(self._apply_detail_visibility)     # redraws the text once laid out
 
     def render_usage(self) -> None:
         try:

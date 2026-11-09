@@ -31,6 +31,7 @@ class Settings:
     show_limits: bool = False           # plan limits (/usage) in the usage panel; reads the Keychain sign-in
     show_expiring: bool = True          # the expiring pane: sessions Claude Code deletes next, with keep
     name_column_width: int = 26         # width of that name column (edit here; not in the panel)
+    usage_width: int = 49               # the usage column's width; drag the line beside it
 
     @classmethod
     def path(cls) -> Path:
