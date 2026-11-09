@@ -1,11 +1,15 @@
 """Plan limits (the /usage windows) come from Anthropic's OAuth usage endpoint using Claude
 Code's own sign-in. The token must never reach the log or a process list, the reply must be
 read tolerantly, and the panel must say why whenever the numbers are unavailable."""
+import hashlib
 import json
 import logging
+import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import limits
 import main
@@ -393,6 +397,54 @@ def test_http_401_means_the_sign_in_expired(monkeypatch):
     monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 0, stdout='{"error":"x"}\n401', stderr=""))
     assert fetch_usage(TOKEN) == (None, limits.EXPIRED)
+
+
+def test_the_credentials_file_lives_in_the_config_dir_the_sessions_come_from(tmp_path):
+    custom = tmp_path / ".claude-work"
+    out = subprocess.run([sys.executable, "-c", "import collector, limits; print(limits.CREDENTIALS_FILE); "
+                          "print(collector.CLAUDE_DIR)"], env=dict(os.environ, CLAUDE_CONFIG_DIR=str(custom)),
+                         cwd=Path(limits.__file__).parent, capture_output=True, text=True, check=True).stdout
+    assert out.split("\n")[:2] == [str(custom / ".credentials.json"), str(custom)]
+
+
+def test_a_custom_config_dir_has_a_keychain_item_of_its_own(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert limits._keychain_services() == ["Claude Code-credentials"]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work")
+    assert limits._keychain_services() == ["Claude Code-credentials-18cc900a"]       # sha256 of the path, 8 hex
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")          # as given, then tidied
+    assert limits._keychain_services() == ["Claude Code-credentials-fb460960", "Claude Code-credentials-18cc900a"]
+    monkeypatch.setenv("HOME", "/Users/someone")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/.claude-work")
+    as_given = "Claude Code-credentials-" + hashlib.sha256(b"~/.claude-work").hexdigest()[:8]
+    assert limits._keychain_services() == [as_given, "Claude Code-credentials-18cc900a"]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude")                # the default dir, named
+    assert "Claude Code-credentials" not in limits._keychain_services()
+
+
+def test_with_a_custom_config_dir_the_sign_in_never_comes_from_the_default_item(tmp_path, monkeypatch):
+    monkeypatch.setattr(limits, "CREDENTIALS_FILE", tmp_path / "absent.json")
+    monkeypatch.setattr(limits, "GLOBAL_CONFIG", tmp_path / "absent.json")
+    asked = []
+
+    def keychain(cmd, **kw):
+        asked.append(cmd[cmd.index("-s") + 1])
+        found = asked[-1] in ("Claude Code-credentials-18cc900a", "Claude Code-credentials")
+        return subprocess.CompletedProcess(cmd, 0 if found else 44, stdout=CREDS if found else "", stderr="")
+    monkeypatch.setattr(limits.subprocess, "run", keychain)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")
+    tok, why = limits.load_token()
+    assert (tok.value, why) == (TOKEN, "")
+    assert asked == ["Claude Code-credentials-fb460960", "Claude Code-credentials-18cc900a"]
+    asked.clear()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-other")
+    assert limits.load_token() == (None, "no Claude Code sign-in in the Keychain")
+    assert len(asked) == 1 and "Claude Code-credentials" not in asked            # that one is another account's
+    monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: (asked.append(cmd[cmd.index("-s") + 1]),
+                                                                     subprocess.CompletedProcess(cmd, 51, "", ""))[1])
+    asked.clear()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")
+    assert limits.load_token() == (None, "Keychain access declined") and len(asked) == 1  # no second dialog
 
 
 def test_credentials_file_is_preferred_over_the_keychain(tmp_path, monkeypatch):
