@@ -22,8 +22,58 @@ enum Theme {
 /// The terminal view, taking the click that brings the window forward as a click too. AppKit
 /// spends the first click on a window in the background on activating it, so picking a row
 /// in agent-farm from another app took two clicks; now the monitor gets that first one.
+///
+/// It also shows the pointer the monitor asks for. Textual sends OSC 22 with a CSS pointer
+/// name for the widget under the mouse (the resize arrows over the column divider), and
+/// SwiftTerm on its own keeps the I-beam everywhere.
 final class FirstClickTerminalView: LocalProcessTerminalView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// The names the monitor can ask for that have a cursor of their own; any other name,
+    /// "default" among them, is the I-beam.
+    private static let pointers: [String: NSCursor] = [
+        "ew-resize": .resizeLeftRight, "col-resize": .resizeLeftRight,
+        "ns-resize": .resizeUpDown, "row-resize": .resizeUpDown,
+        "pointer": .pointingHand,
+    ]
+    private var pointer: NSCursor = .iBeam
+    private var pointerRequests: TerminalOscObservation?
+
+    /// Starts showing the pointers the monitor asks for. SwiftTerm hands over each OSC
+    /// sequence on a queue of its own, so the pointer changes on the main thread.
+    func followPointerRequests() {
+        _ = Self.ownPointerMethods
+        pointerRequests = observeOscEvents { [weak self] event in
+            guard event.code == 22 else { return }
+            let name = String(decoding: event.payload, as: UTF8.self)
+            DispatchQueue.main.async { self?.showPointer(named: name) }
+        }
+    }
+
+    func showPointer(named name: String) {
+        let wanted = Self.pointers[name] ?? .iBeam
+        guard wanted != pointer else { return }
+        pointer = wanted
+        window?.invalidateCursorRects(for: self)
+        wanted.set()
+    }
+
+    /// SwiftTerm's cursorUpdate(with:) and resetCursorRects() put the I-beam back on every
+    /// mouse move, and Swift won't let a class outside SwiftTerm override them: they are
+    /// public, not open. They are Objective-C methods, though, so this class adds its own
+    /// at run time, once. SwiftTerm's class keeps its versions.
+    private static let ownPointerMethods: Void = {
+        let update: @convention(block) (FirstClickTerminalView, NSEvent) -> Void = { view, _ in
+            if NSCursor.current != view.pointer { view.pointer.set() }
+        }
+        let rects: @convention(block) (FirstClickTerminalView) -> Void = { view in
+            view.addCursorRect(view.bounds, cursor: view.pointer)
+        }
+        class_addMethod(FirstClickTerminalView.self, #selector(NSView.cursorUpdate(with:)),
+                        imp_implementationWithBlock(update), "v@:@")
+        class_addMethod(FirstClickTerminalView.self, #selector(NSView.resetCursorRects),
+                        imp_implementationWithBlock(rects), "v@:")
+    }()
 }
 
 /// Hosts the Python TUI (agent-farm-core, a PyInstaller build of main.py) inside a
@@ -100,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         t.nativeForegroundColor = Theme.foreground
         t.font = currentFont
         t.fontSmoothing = fontSmoothing
+        t.followPointerRequests()
         w.contentView?.addSubview(t)
         terminal = t
         window = w
@@ -174,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         coreRunning = false
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            (self.terminal as? FirstClickTerminalView)?.showPointer(named: "default")   // no one left to ask
             if self.restartRequested {       // Restart Monitor: the clean exit was ours
                 self.restartRequested = false
                 self.startCore()

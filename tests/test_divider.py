@@ -92,3 +92,23 @@ def test_the_divider_goes_with_the_panel(tmp_path, monkeypatch):
         await pilot.pause(0.2)
         assert divider.display
     _run(tmp_path, monkeypatch, steps)
+
+
+def test_the_pointer_is_the_resize_arrows_over_the_divider_and_all_through_a_drag(tmp_path, monkeypatch):
+    async def steps(app, pilot):
+        sent = []
+        real = app._set_pointer_shape
+        app._set_pointer_shape = lambda shape: (sent.append(shape), real(shape))
+        divider = app.query_one("#divider")
+        await pilot.hover(divider)
+        assert sent[-1:] == ["ew-resize"]
+        await pilot.hover("#tree")
+        assert sent[-1:] == ["default"]
+        await pilot.mouse_down(divider)
+        await pilot.hover(None, offset=(5, 10))                # held at the list's room, past the line
+        await pilot.pause(0.2)
+        assert sent[-1:] == ["ew-resize"] and not app.screen.selections     # and no text was selected
+        await pilot.mouse_up(None, offset=(5, 10))
+        await pilot.hover(None, offset=(6, 10))
+        assert sent[-1:] == ["default"]
+    _run(tmp_path, monkeypatch, steps)

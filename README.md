@@ -81,9 +81,9 @@ On the right, **the usage panel**, down the full height of the window: your toke
 day and per model (press `u`), how the week's limit was spent across your projects (press
 `p`), and at the bottom how many agents were at work in each of the last 24 hours, as tall as
 the expiring pane beside it. With both graphs hidden the panel closes and the left column
-takes the whole width. Drag the line between the columns to make the panel wider or
-narrower; it remembers the width, and a narrower window never squeezes the session list or
-the panel past their smallest.
+takes the whole width. Drag the line between the columns (the pointer turns into resize
+arrows over it) to make the panel wider or narrower; it remembers the width, and a narrower
+window never squeezes the session list or the panel past their smallest.
 
 The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
 Dock, Mission Control and the window switcher show whether the farm needs you.

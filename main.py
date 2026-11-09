@@ -1510,6 +1510,8 @@ class Divider(Widget):
     """The line between the columns. Dragging it with the left button sets the usage column's
     width: the app sizes the column on each move and keeps the width once the button is up."""
 
+    ALLOW_SELECT = False        # a press here starts a drag, not a text selection across the panels
+
     class Dragged(Message):
         def __init__(self, screen_x: int, done: bool) -> None:
             super().__init__()
@@ -1562,7 +1564,8 @@ class AgentFarm(App):
     #tree:focus > .tree--cursor { background: #1f3b5c; text-style: bold; }
     #usage { height: 1fr; }                     /* its width is the setting, held to the window */
     #usage.hidden { display: none; }
-    Divider { width: 1; height: 1fr; border-left: solid $primary-darken-2; }
+    /* The pointer goes out as OSC 22; the Mac app shows it, and other terminals may. */
+    Divider { width: 1; height: 1fr; border-left: solid $primary-darken-2; pointer: ew-resize; }
     Divider:hover, Divider.-dragging { border-left: solid $primary-lighten-2; }
     Divider.hidden { display: none; }
     /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
