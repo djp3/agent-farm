@@ -26,9 +26,8 @@ log.setLevel(logging.INFO)
 
 
 # Directory names whose contents must never trigger a restart (pip installs touch
-# thousands of .py files under .venv). Matched by path segment, because watchdog's
-# ignore_patterns use PurePath.match, which only matches the trailing components,
-# so a pattern like "*/.venv/*" silently misses anything nested deeper.
+# thousands of .py files under .venv). Matched by path segment, so a folder is skipped
+# at any depth without a glob for each.
 IGNORED_DIRS = {".venv", "venv", "__pycache__", ".git",
                 "build", "dist", ".build", ".sparkle-tools"}  # packaging output
 
@@ -40,7 +39,7 @@ class PythonFileChangeHandler(PatternMatchingEventHandler):
     """
     def __init__(self, on_change_callback):
         super().__init__(
-            patterns=["*.py"],       # match *.py files
+            patterns=["**/*.py"],    # *.py at any depth: watchdog 7 matches the whole path
             ignore_directories=False,
             case_sensitive=True
         )

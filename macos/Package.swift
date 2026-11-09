@@ -8,8 +8,8 @@ let package = Package(
     name: "AgentFarm",
     platforms: [.macOS(.v13)],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.99.0"),
-        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.10.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.99.3"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.10.1"),
     ],
     targets: [
         .executableTarget(
