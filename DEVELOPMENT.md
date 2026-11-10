@@ -119,14 +119,25 @@ update. Sparkle compares `CFBundleVersion`, which is `VERSION`, so bump it every
 ### Each release
 
     echo 0.2.0 > VERSION
-    git commit -am "Release 0.2.0" && git push
+    $EDITOR release-notes/0.2.0.md          # what is new, written for people who use the app
+    git add VERSION release-notes && git commit -m "Release 0.2.0" && git push
     scripts/release.sh
 
-The script refuses to run with uncommitted changes or an existing tag, builds with the
-Developer ID, notarizes with `notarytool --wait`, staples, verifies with `spctl`, zips with
-`ditto`, writes and signs the appcast with `generate_appcast`, tags, pushes the tag and
-creates the release with generated notes. Delete a bad release on GitHub and `latest`
+The script refuses to run with uncommitted changes, an existing tag or no notes file. It
+builds with the Developer ID, notarizes with `notarytool --wait`, staples, verifies with
+`spctl` and zips with `ditto`. It then writes and signs the appcast with `generate_appcast`,
+tags, pushes the tag and creates the release. Delete a bad release on GitHub and `latest`
 falls back to the previous one.
+
+The notes in `release-notes/<VERSION>.md` show in two places:
+
+- **The appcast.** Sparkle shows the notes in its update window, rendering them as Markdown.
+  The window is small, so keep to a few short paragraphs and `-` lists.
+- **The GitHub release.** GitHub's "Full Changelog" link follows the notes.
+
+People who let Sparkle install updates automatically never see the window, so the GitHub
+release is the record. The repository is public, so the notes, like the README, use made-up
+numbers and names.
 
 ### From GitHub Actions
 

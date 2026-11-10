@@ -6,6 +6,8 @@
 # Reads VERSION, builds dist/agent-farm.app signed with a Developer ID, notarizes and
 # staples it, zips it, writes a Sparkle appcast signed with the agent-farm EdDSA key,
 # tags v<VERSION>, and creates the GitHub release with the zip and appcast.xml attached.
+# The notes in release-notes/<VERSION>.md go into the appcast, where Sparkle's update
+# window shows them, and onto the GitHub release.
 # Installed apps poll https://github.com/djp3/agent-farm/releases/latest/download/appcast.xml,
 # so creating the release is what ships the update.
 #
@@ -27,6 +29,7 @@ NOTARY_PROFILE=${NOTARY_PROFILE:-agent-farm}
 SPARKLE_ACCOUNT=${SPARKLE_ACCOUNT:-agent-farm}
 APP=dist/agent-farm.app
 ZIP=dist/agent-farm-$VERSION.zip
+NOTES=release-notes/$VERSION.md
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { echo "release: $*" >&2; exit 1; }
@@ -51,6 +54,7 @@ fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists locally; bump VERSION, or delete it if the previous attempt did not publish"
 git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && die "tag $TAG already exists on origin; bump VERSION first"
 gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && die "release $TAG already exists on GitHub"
+[ -s "$NOTES" ] || die "no release notes in $NOTES; write what is new in $VERSION first (DEVELOPMENT.md, \"Releasing\")"
 TOOLS=$(scripts/fetch_sparkle_tools.sh)
 if [ -n "${NOTARY_KEY_FILE:-}" ]; then
     NOTARY_ARGS=(--key "$NOTARY_KEY_FILE" --key-id "${NOTARY_KEY_ID:?NOTARY_KEY_ID}" --issuer "${NOTARY_ISSUER_ID:?NOTARY_ISSUER_ID}")
@@ -83,11 +87,17 @@ rm -rf dist/appcast "$ZIP"
 mkdir -p dist/appcast
 ditto -c -k --keepParent "$APP" "$ZIP"
 cp "$ZIP" dist/appcast/
+# generate_appcast pairs notes with the archive whose name they share, and embeds them so the
+# signed appcast carries them; nothing else needs hosting.
+cp "$NOTES" "dist/appcast/$(basename "$ZIP" .zip).md"
 "$TOOLS/bin/generate_appcast" "${SPARKLE_KEY_ARGS[@]}" \
     --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
     --link "https://github.com/$REPO/releases" \
+    --embed-release-notes \
     -o dist/appcast/appcast.xml dist/appcast
 grep -q "sparkle:edSignature" dist/appcast/appcast.xml || die "appcast.xml carries no EdDSA signature"
+grep -q '<description sparkle:format="markdown">' dist/appcast/appcast.xml || die "appcast.xml carries no release notes"
+{ cat "$NOTES"; printf '%s\n' "$NOTES_SUFFIX"; } > dist/release-notes.md
 
 step "publish $TAG"
 git push origin HEAD                      # the release must be reproducible from the repo
@@ -97,8 +107,9 @@ if ! { git push origin "$TAG" || { sleep 5; git push origin "$TAG"; }; }; then  
     git tag -d "$TAG" >/dev/null
     die "pushing tag $TAG failed; nothing was published, re-run to try again"
 fi
+# --generate-notes adds GitHub's "Full Changelog" link after the notes.
 if ! gh release create "$TAG" --repo "$REPO" --title "agent-farm $VERSION" --generate-notes \
-        ${NOTES_SUFFIX:+--notes "$NOTES_SUFFIX"} "$ZIP" dist/appcast/appcast.xml; then
+        --notes-file dist/release-notes.md "$ZIP" dist/appcast/appcast.xml; then
     git push --delete origin "$TAG" >/dev/null 2>&1 || true
     git tag -d "$TAG" >/dev/null
     die "creating the GitHub release failed; the tag was removed again, re-run to try again"
