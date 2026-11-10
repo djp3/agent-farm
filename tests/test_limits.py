@@ -11,6 +11,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 import limits
 import main
 from limits import LimitsReport, PlanLimits, fetch_usage, parse_report
@@ -53,6 +55,26 @@ TOKEN = "sk-ant-oat01-SECRET-TOKEN-VALUE"
 ORG = "00000000-0000-4000-8000-000000000000"
 CREDS = json.dumps({"claudeAiOauth": {"accessToken": TOKEN, "expiresAt": 4102444800000,
                                       "subscriptionType": "max"}})
+STORAGE_VARS = ("CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+
+
+@pytest.fixture(autouse=True)
+def no_real_keychain(monkeypatch):
+    """The sign-in is looked for in the Keychain first, so no test may reach the real one:
+    `security` finds nothing unless a test sets up its own, and other commands run as usual."""
+    real = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == limits.SECURITY:
+            return subprocess.CompletedProcess(cmd, 44, stdout="", stderr="")
+        return real(cmd, *args, **kwargs)
+    monkeypatch.setattr(limits.subprocess, "run", run)
+    for var in STORAGE_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _item(path: str) -> str:
+    return "Claude Code-credentials-" + hashlib.sha256(path.encode()).hexdigest()[:8]
 
 
 def test_reply_parses_into_ordered_windows_and_skips_empty_ones():
@@ -399,27 +421,51 @@ def test_http_401_means_the_sign_in_expired(monkeypatch):
     assert fetch_usage(TOKEN) == (None, limits.EXPIRED)
 
 
-def test_the_credentials_file_lives_in_the_config_dir_the_sessions_come_from(tmp_path):
-    custom = tmp_path / ".claude-work"
+def _paths_at_import(**env: str) -> list[str]:
+    """limits.CREDENTIALS_FILE and collector.CLAUDE_DIR as a fresh process sees them."""
+    base = {k: v for k, v in os.environ.items() if k not in STORAGE_VARS}
     out = subprocess.run([sys.executable, "-c", "import collector, limits; print(limits.CREDENTIALS_FILE); "
-                          "print(collector.CLAUDE_DIR)"], env=dict(os.environ, CLAUDE_CONFIG_DIR=str(custom)),
+                          "print(collector.CLAUDE_DIR)"], env=base | env,
                          cwd=Path(limits.__file__).parent, capture_output=True, text=True, check=True).stdout
-    assert out.split("\n")[:2] == [str(custom / ".credentials.json"), str(custom)]
+    return out.split("\n")[:2]
+
+
+def test_the_credentials_file_lives_where_claude_code_keeps_it(tmp_path):
+    custom, keys = tmp_path / ".claude-work", tmp_path / ".claude-keys"
+    assert _paths_at_import(CLAUDE_CONFIG_DIR=str(custom)) == [str(custom / ".credentials.json"), str(custom)]
+    # the storage dir moves only the sign-in; the sessions stay in the config dir
+    assert (_paths_at_import(CLAUDE_CONFIG_DIR=str(custom), CLAUDE_SECURESTORAGE_CONFIG_DIR=str(keys))
+            == [str(keys / ".credentials.json"), str(custom)])
+    assert (_paths_at_import(CLAUDE_CONFIG_DIR=str(custom), CLAUDE_SECURESTORAGE_CONFIG_DIR="", HOME=str(tmp_path))
+            == [str(tmp_path / ".claude" / ".credentials.json"), str(custom)])
 
 
 def test_a_custom_config_dir_has_a_keychain_item_of_its_own(monkeypatch):
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    assert limits._keychain_services() == ["Claude Code-credentials"]
+    assert limits._keychain_service() == "Claude Code-credentials"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")                                     # empty counts as unset
+    assert limits._keychain_service() == "Claude Code-credentials"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work")
-    assert limits._keychain_services() == ["Claude Code-credentials-18cc900a"]       # sha256 of the path, 8 hex
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")          # as given, then tidied
-    assert limits._keychain_services() == ["Claude Code-credentials-fb460960", "Claude Code-credentials-18cc900a"]
-    monkeypatch.setenv("HOME", "/Users/someone")
+    assert limits._keychain_service() == "Claude Code-credentials-18cc900a"         # sha256 of the path, 8 hex
+    # the path is hashed exactly as set: no slash removal, no ~ expansion
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")
+    assert limits._keychain_service() == "Claude Code-credentials-fb460960"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/.claude-work")
-    as_given = "Claude Code-credentials-" + hashlib.sha256(b"~/.claude-work").hexdigest()[:8]
-    assert limits._keychain_services() == [as_given, "Claude Code-credentials-18cc900a"]
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude")                # the default dir, named
-    assert "Claude Code-credentials" not in limits._keychain_services()
+    assert limits._keychain_service() == _item("~/.claude-work")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude")               # the default dir, named
+    assert limits._keychain_service() == _item("/Users/someone/.claude")
+    # an accent pasted from Finder can arrive decomposed; Claude Code hashes the composed form
+    composed, decomposed = "/Users/someone/Caf\u00e9", "/Users/someone/Cafe\u0301"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", decomposed)
+    assert limits._keychain_service() == _item(composed) != _item(decomposed)
+
+
+def test_the_secure_storage_dir_decides_the_keychain_item_when_set(monkeypatch):
+    monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/Users/someone/.claude-keys")
+    assert limits._keychain_service() == _item("/Users/someone/.claude-keys")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work")
+    assert limits._keychain_service() == _item("/Users/someone/.claude-keys")
+    monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")                       # set but empty: the plain item
+    assert limits._keychain_service() == "Claude Code-credentials"
 
 
 def test_with_a_custom_config_dir_the_sign_in_never_comes_from_the_default_item(tmp_path, monkeypatch):
@@ -432,10 +478,9 @@ def test_with_a_custom_config_dir_the_sign_in_never_comes_from_the_default_item(
         found = asked[-1] in ("Claude Code-credentials-18cc900a", "Claude Code-credentials")
         return subprocess.CompletedProcess(cmd, 0 if found else 44, stdout=CREDS if found else "", stderr="")
     monkeypatch.setattr(limits.subprocess, "run", keychain)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work")
     tok, why = limits.load_token()
-    assert (tok.value, why) == (TOKEN, "")
-    assert asked == ["Claude Code-credentials-fb460960", "Claude Code-credentials-18cc900a"]
+    assert (tok.value, why) == (TOKEN, "") and asked == ["Claude Code-credentials-18cc900a"]
     asked.clear()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-other")
     assert limits.load_token() == (None, "no Claude Code sign-in in the Keychain")
@@ -443,21 +488,23 @@ def test_with_a_custom_config_dir_the_sign_in_never_comes_from_the_default_item(
     monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: (asked.append(cmd[cmd.index("-s") + 1]),
                                                                      subprocess.CompletedProcess(cmd, 51, "", ""))[1])
     asked.clear()
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/someone/.claude-work/")
     assert limits.load_token() == (None, "Keychain access declined") and len(asked) == 1  # no second dialog
 
 
-def test_credentials_file_is_preferred_over_the_keychain(tmp_path, monkeypatch):
+def test_the_keychain_comes_first_and_the_file_is_the_fallback(tmp_path, monkeypatch):
     f = tmp_path / ".credentials.json"
-    f.write_text(CREDS)
+    f.write_text(CREDS.replace(TOKEN, "sk-ant-oat01-FILE-TOKEN-VALUE"))
     monkeypatch.setattr(limits, "CREDENTIALS_FILE", f)
     monkeypatch.setattr(limits, "GLOBAL_CONFIG", tmp_path / "absent.json")
-
-    def no_keychain(*a, **k):
-        raise AssertionError("security must not run")
-    monkeypatch.setattr(limits.subprocess, "run", no_keychain)
-    tok, why = limits.load_token()
-    assert tok.value == TOKEN and why == ""
+    for code, expect in ((0, TOKEN), (44, "sk-ant-oat01-FILE-TOKEN-VALUE"), (51, "sk-ant-oat01-FILE-TOKEN-VALUE")):
+        monkeypatch.setattr(limits.subprocess, "run", lambda cmd, code=code, **kw: subprocess.CompletedProcess(
+            cmd, code, stdout=CREDS if code == 0 else "", stderr=""))
+        tok, why = limits.load_token()
+        assert (tok.value, why) == (expect, ""), code
+    f.unlink()
+    assert limits.load_token() == (None, "Keychain access declined")             # the last stub: 51
+    monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 44, "", ""))
+    assert limits.load_token() == (None, "no Claude Code sign-in in the Keychain")
 
 
 def test_refresh_keeps_last_windows_and_reports_the_reason(monkeypatch, caplog):

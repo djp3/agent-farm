@@ -298,7 +298,8 @@ reading, it says `reset` until the next fetch.
 
 Those numbers exist nowhere on disk, so agent-farm fetches them the way Claude Code does: it
 reads the Claude Code sign-in from your Keychain (the item named `Claude Code-credentials`, or
-the one Claude Code keeps for your `CLAUDE_CONFIG_DIR` folder if you set one)
+the one Claude Code keeps for your `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+folder if you set one, or the credentials file Claude Code falls back to without a Keychain)
 and asks Anthropic's usage endpoint when you open the panel, then again as soon as a session
 or subagent has worked since the last fetch, at most once every five minutes. While everyone
 is idle or waiting for you no request goes out and the header says paused, since the numbers

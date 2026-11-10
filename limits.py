@@ -7,9 +7,9 @@ Nothing about these windows lands on disk. Claude Code fetches them from Anthrop
 endpoints with the sign-in token it keeps in the macOS Keychain, so this module does the same
 fetches, read-only and opt-in (Settings → plan limits):
   • the token is read from the Keychain item "Claude Code-credentials", or the one Claude
-    Code keeps for CLAUDE_CONFIG_DIR when that is set (or from the credentials file Claude
-    Code uses where there is no Keychain). It is never refreshed, logged or written
-    anywhere, and it reaches curl on stdin so it never shows in `ps`
+    Code keeps for CLAUDE_CONFIG_DIR or CLAUDE_SECURESTORAGE_CONFIG_DIR when set, and failing
+    that from the credentials file Claude Code falls back to. It is never refreshed, logged
+    or written anywhere, and it reaches curl on stdin so it never shows in `ps`
   • the request goes through the system curl so TLS uses the macOS trust store; the
     bundled Python only knows Homebrew's certificate path, which other Macs lack
   • only percentages, reset times, surface names, the server's color reading and the credit
@@ -28,6 +28,7 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -39,7 +40,7 @@ log = logging.getLogger("agent_farm.limits")
 SECURITY = "/usr/bin/security"
 CURL = "/usr/bin/curl"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
-CREDENTIALS_FILE = CLAUDE_DIR / ".credentials.json"         # the config dir the sessions come from
+STORAGE_DIR_VAR = "CLAUDE_SECURESTORAGE_CONFIG_DIR"         # where Claude Code keeps the sign-in, if set
 GLOBAL_CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home())) / ".claude.json"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CREDITS_URL = "https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits"
@@ -147,47 +148,65 @@ def _org_id() -> str:
     return org if ORG_ID.fullmatch(org) else ""
 
 
-def _keychain_services() -> list[str]:
-    """The Keychain items that can hold the sign-in, in the order to try them. A custom
-    CLAUDE_CONFIG_DIR gets an item of its own, named with the first 8 hex characters of the
-    SHA-256 of the dir's path, even when it names the default dir. How Claude Code tidies the
-    path before hashing isn't known, so the value as given is tried, then its absolute form.
-    The default item is never tried for a custom dir: it holds another account's sign-in."""
-    d = os.environ.get("CLAUDE_CONFIG_DIR")
-    if not d:
-        return [KEYCHAIN_SERVICE]
-    forms = dict.fromkeys((d, os.path.abspath(os.path.expanduser(d))))
-    return [f"{KEYCHAIN_SERVICE}-{hashlib.sha256(f.encode()).hexdigest()[:8]}" for f in forms]
+def _keychain_service() -> str:
+    """The Keychain item that holds the sign-in, named the way Claude Code (2.1.321) names it.
+    A CLAUDE_CONFIG_DIR gets an item of its own, suffixed with the first 8 hex characters of
+    the SHA-256 of the path exactly as set, Unicode NFC being the only change; even a dir that
+    names the default one gets the suffix. CLAUDE_SECURESTORAGE_CONFIG_DIR, when set, decides
+    instead: its value is hashed, and set but empty it means the plain item. Otherwise a custom
+    dir never uses the plain item, which holds another account's sign-in."""
+    store = os.environ.get(STORAGE_DIR_VAR)
+    named = store if store is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if not named:
+        return KEYCHAIN_SERVICE
+    key = unicodedata.normalize("NFC", named).encode()
+    return f"{KEYCHAIN_SERVICE}-{hashlib.sha256(key).hexdigest()[:8]}"
+
+
+def _credentials_file() -> Path:
+    """The file Claude Code falls back to when the Keychain fails: in
+    CLAUDE_SECURESTORAGE_CONFIG_DIR when that is set (~/.claude when it is empty), else in the
+    dir the sessions come from."""
+    store = os.environ.get(STORAGE_DIR_VAR)
+    if store is None:
+        return CLAUDE_DIR / ".credentials.json"         # the config dir the sessions come from
+    return Path(store or Path.home() / ".claude") / ".credentials.json"
+
+
+CREDENTIALS_FILE = _credentials_file()
+
+
+def _from_keychain() -> tuple[str | None, str]:
+    """The sign-in's text from the Keychain, as (blob, reason) with exactly one set."""
+    try:
+        r = subprocess.run([SECURITY, "find-generic-password", "-s", _keychain_service(), "-w"],
+                           capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None, "Keychain did not answer"
+    except OSError:
+        return None, "security tool missing"
+    if r.returncode == 0:
+        return r.stdout, ""
+    log.info("plan limits: Keychain lookup failed (exit %d)", r.returncode)
+    # 44 is errSecItemNotFound; anything else is most often the user declining the dialog
+    if r.returncode == 44:
+        return None, "no Claude Code sign-in in the Keychain"
+    return None, "Keychain access declined"
 
 
 def load_token() -> tuple[_Token | None, str]:
-    """Claude Code's sign-in: the credentials file when it exists, else the Keychain.
+    """Claude Code's sign-in, looked for in its order: the Keychain, then the credentials file.
     Returns (token, reason) with exactly one of them set. Nothing about the token is logged."""
-    if CREDENTIALS_FILE.exists():
+    blob, why = _from_keychain()
+    source = "Keychain"
+    if blob is None:
+        if not CREDENTIALS_FILE.exists():
+            return None, why
         try:
             blob = CREDENTIALS_FILE.read_text()
         except OSError:
             return None, "credentials file unreadable"
         source = "credentials file"
-    else:
-        for service in _keychain_services():
-            try:
-                r = subprocess.run([SECURITY, "find-generic-password", "-s", service, "-w"],
-                                   capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                return None, "Keychain did not answer"
-            except OSError:
-                return None, "security tool missing"
-            if r.returncode == 0:
-                break
-            log.info("plan limits: Keychain lookup failed (exit %d)", r.returncode)
-            # 44 is errSecItemNotFound; anything else is most often the user declining the dialog
-            if r.returncode != 44:
-                return None, "Keychain access declined"
-        else:
-            return None, "no Claude Code sign-in in the Keychain"
-        blob = r.stdout
-        source = "Keychain"
     tok = _parse_credentials(blob)
     if tok is None:
         return None, f"unexpected {source} format"
