@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import pwd
 import re
 import subprocess
 import threading
@@ -41,6 +42,8 @@ SECURITY = "/usr/bin/security"
 CURL = "/usr/bin/curl"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 STORAGE_DIR_VAR = "CLAUDE_SECURESTORAGE_CONFIG_DIR"         # where Claude Code keeps the sign-in, if set
+ACCOUNT_NAME = re.compile(r"[a-zA-Z0-9._-]+")               # the user names Claude Code files the item under
+NO_ACCOUNT = "claude-code-user"                             # its stand-in for any other name
 GLOBAL_CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home())) / ".claude.json"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CREDITS_URL = "https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits"
@@ -163,6 +166,16 @@ def _keychain_service() -> str:
     return f"{KEYCHAIN_SERVICE}-{hashlib.sha256(key).hexdigest()[:8]}"
 
 
+def _keychain_account() -> str:
+    """The account Claude Code (2.1.321) files its Keychain item under: $USER, else the login
+    name, with its stand-in when the name has characters it doesn't accept."""
+    try:
+        name = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, OSError):
+        name = NO_ACCOUNT
+    return name if ACCOUNT_NAME.fullmatch(name) else NO_ACCOUNT
+
+
 def _credentials_file() -> Path:
     """The file Claude Code falls back to when the Keychain fails: in
     CLAUDE_SECURESTORAGE_CONFIG_DIR when that is set (~/.claude when it is empty), else in the
@@ -177,10 +190,12 @@ CREDENTIALS_FILE = _credentials_file()
 
 
 def _from_keychain() -> tuple[str | None, str]:
-    """The sign-in's text from the Keychain, as (blob, reason) with exactly one set."""
+    """The sign-in's text from the Keychain, as (blob, reason) with exactly one set. The item
+    is asked for by service and account, as Claude Code asks for it, so a copy filed under
+    another account is never picked up."""
+    cmd = [SECURITY, "find-generic-password", "-a", _keychain_account(), "-s", _keychain_service(), "-w"]
     try:
-        r = subprocess.run([SECURITY, "find-generic-password", "-s", _keychain_service(), "-w"],
-                           capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_S)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=KEYCHAIN_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return None, "Keychain did not answer"
     except OSError:

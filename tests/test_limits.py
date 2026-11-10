@@ -10,6 +10,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -466,6 +467,32 @@ def test_the_secure_storage_dir_decides_the_keychain_item_when_set(monkeypatch):
     assert limits._keychain_service() == _item("/Users/someone/.claude-keys")
     monkeypatch.setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")                       # set but empty: the plain item
     assert limits._keychain_service() == "Claude Code-credentials"
+
+
+def test_the_keychain_item_is_asked_for_under_the_account_claude_code_files_it_under(tmp_path, monkeypatch):
+    for user, account in (("someone", "someone"), ("some.one_2-x", "some.one_2-x"),
+                          ("some one", "claude-code-user"), ("jos\u00e9", "claude-code-user"),
+                          ("someone\n", "claude-code-user")):
+        monkeypatch.setenv("USER", user)
+        assert limits._keychain_account() == account, user
+    monkeypatch.setattr(limits.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="someone"))
+    monkeypatch.setenv("USER", "")                                                  # empty or unset: the login name
+    assert limits._keychain_account() == "someone"
+    monkeypatch.delenv("USER")
+    assert limits._keychain_account() == "someone"
+
+    def no_entry(uid):
+        raise KeyError(uid)
+    monkeypatch.setattr(limits.pwd, "getpwuid", no_entry)
+    assert limits._keychain_account() == "claude-code-user"
+    monkeypatch.setattr(limits, "CREDENTIALS_FILE", tmp_path / "absent.json")
+    monkeypatch.setenv("USER", "someone")
+    asked = []
+    monkeypatch.setattr(limits.subprocess, "run", lambda cmd, **kw: (asked.append(cmd),
+                                                                     subprocess.CompletedProcess(cmd, 44, "", ""))[1])
+    limits.load_token()
+    (cmd,) = asked
+    assert (cmd[cmd.index("-a") + 1], cmd[cmd.index("-s") + 1]) == ("someone", "Claude Code-credentials")
 
 
 def test_with_a_custom_config_dir_the_sign_in_never_comes_from_the_default_item(tmp_path, monkeypatch):
