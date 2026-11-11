@@ -89,14 +89,19 @@ _model_slot: dict[str, int] = {}          # model -> slot index, assigned on fir
 
 def model_slot(model: str) -> tuple[str, str]:
     if model not in _model_slot:
-        _model_slot[model] = len(_model_slot)
+        taken = set(_model_slot.values())
+        _model_slot[model] = next(i for i in range(len(taken) + 1) if i not in taken)
     idx = _model_slot[model]
     return MODEL_SLOTS[idx] if idx < len(MODEL_SLOTS) else MODEL_OTHER
 
 
 def model_hues(split: list[tuple[str, int]]) -> dict[str, str]:
     """The hue of each model the output-by-model bar names, biggest first. Asked in the bar's
-    own order, so this assigns the same slots drawing the bar would."""
+    own order, so this assigns the same slots drawing the bar would. A model gone from the
+    split is drawn nowhere, so its slot goes to the next new one: a new release gets a color
+    of its own however many models came and went while the app was running."""
+    for gone in set(_model_slot) - {m for m, _ in split}:
+        del _model_slot[gone]
     return {m: model_slot(m)[0] for m, _ in split[:MODEL_SPLIT_TOP]}
 
 
@@ -105,6 +110,7 @@ def model_split_text(split: list[tuple[str, int]], width: int) -> Text:
     legend line of swatch, name and share."""
     t = Text()
     total = sum(n for _, n in split) or 1
+    model_hues(split)
     top = split[:MODEL_SPLIT_TOP]
     other = sum(n for _, n in split[MODEL_SPLIT_TOP:])
     parts = [(m, n, model_slot(m)) for m, n in top]

@@ -35,6 +35,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -69,18 +70,41 @@ RECENT_COMMANDS = 50                # foreground commands remembered, in case on
 LAUNCH_MATCH_S = 60                 # a shell starting this soon after a launch row is that launch's
 
 
-# Relative worth of a model's tokens (input, output, cache read), first matching prefix wins.
-# These are Anthropic's list rates per million, checked against the costs Claude Code records.
+# Relative worth of a model's tokens (input, output, cache read): Anthropic's list rates per
+# million, by family and from the version on which they apply, as the model catalog in Claude
+# Code 2.1.322 prices them. A version not listed takes the rates of the newest one below it,
+# so a new release (Fable 5.3, Opus 6) is weighed like its predecessor until it is added here.
 # Haiku 5.5 is at its rate for prompts over 100K tokens, which is what Claude Code's are.
-MODEL_WEIGHTS = (("fable-5-1", 10, 50, 0.25), ("fable", 10, 50, 1), ("opus-5-5", 4, 20, 0.2), ("opus", 5, 25, 0.5),
-                 ("sonnet-5", 2, 10, 0.2), ("sonnet", 3, 15, 0.3), ("haiku-5", 0.5, 2.5, 0.05), ("haiku", 1, 5, 0.1))
-UNKNOWN_MODEL_WEIGHTS = (5, 25, 0.5)
+MODEL_RATES = {
+    "fable": {(5,): (10, 50, 1), (5, 1): (10, 50, 0.25), (5, 2): (8, 40, 0.2)},
+    "opus": {(4,): (15, 75, 1.5), (4, 5): (5, 25, 0.5), (5, 5): (4, 20, 0.2)},
+    "sonnet": {(3, 5): (3, 15, 0.3), (5,): (2, 10, 0.2), (5, 5): (2, 10, 0.1)},
+    "haiku": {(3, 5): (0.8, 4, 0.08), (4, 5): (1, 5, 0.1), (5, 5): (0.5, 2.5, 0.05)},
+}
+UNKNOWN_MODEL_WEIGHTS = (5, 25, 0.5)            # a family not listed
 CACHE_WRITE_5M, CACHE_WRITE_1H = 1.25, 2.0      # a cache write, in terms of the model's input
+# The family, and its version: the numbers after it ("fable-5-2", "haiku-4-5-20251001"), or
+# before it in the older names ("3-5-sonnet-20241022"). Numbers past two digits are a date.
+_MODEL_NAME = re.compile(r"(?<![a-z])(?:(\d{1,2})-(\d{1,2})-)?(" + "|".join(MODEL_RATES) + r")((?:-\d{1,2}(?!\d))*)")
+
+
+@lru_cache(maxsize=256)
+def model_rates(model: str) -> tuple[float, float, float]:
+    """A model's (input, output, cache read) rates. `model` is the transcript's name for it,
+    with or without "claude-" and in a cloud provider's spelling ("us.anthropic.fable-5-2-v1:0")."""
+    m = _MODEL_NAME.search(model)
+    if not m:
+        return UNKNOWN_MODEL_WEIGHTS
+    major, minor, family, after = m.groups()
+    version = tuple(int(n) for n in after.split("-")[1:]) or ((int(major), int(minor)) if major else ())
+    rates = MODEL_RATES[family]
+    known = [v for v in rates if v <= version] or [min(rates)]
+    return rates[max(known)]
 
 
 def message_weight(model: str, usage: dict) -> float:
     """What a message's tokens are worth, for comparing one message with another."""
-    inp, out, read = next((m[1:] for m in MODEL_WEIGHTS if model.startswith(m[0])), UNKNOWN_MODEL_WEIGHTS)
+    inp, out, read = model_rates(model)
     writes = int(usage.get("cache_creation_input_tokens") or 0)
     split = usage.get("cache_creation")
     hour_writes = int(split.get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0

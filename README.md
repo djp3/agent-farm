@@ -266,7 +266,7 @@ the tokens but a sixth of the weight. With plan limits off it shows each day's s
 14 days instead.
 
 Beneath the days a stacked bar splits output tokens by model, with a legend; each model keeps
-its color and texture for the life of the app, so the stack reads without color. The "logged
+its color and texture while it is in the 14 days, so the stack reads without color. The "logged
 cost" line sums the cost checkpoints Claude Code writes at the end of each session, so
 today's sessions are not in it yet.
 
@@ -324,7 +324,8 @@ from its `.git/config` and keeps only the owner and repo.
 
 The split is an estimate. Anthropic reports the week's total and its shares by surface but
 not by project, so agent-farm divides Claude Code's share by what each message's tokens are
-worth relative to the others, using the list rates of its model. No money is shown. With
+worth relative to the others, using the list rates of its model (a model released after
+your copy of agent-farm counts at the rates of the version before it). No money is shown. With
 plan limits off, or for a moment after the week resets, the rows are percents of the last 7
 days' use instead.
 

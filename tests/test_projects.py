@@ -9,6 +9,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 import main
 import usage
 from expiring import ExpiryScanner
@@ -96,6 +98,40 @@ def test_a_message_is_worth_what_its_model_and_token_kinds_are_worth():
     assert message_weight("fable-5-1", five) == 8 * 12.5
     assert message_weight("fable-5-1", hour) == 8 * 20
     assert message_weight("fable-5-1", {"cache_creation_input_tokens": 8, "cache_creation": "odd"}) == 8 * 12.5
+
+
+def test_every_model_is_weighed_at_the_rates_claude_codes_catalog_gives_it():
+    # (input, output, cache read) per million, from the model catalog in Claude Code 2.1.322
+    catalog = {"fable-5": (10, 50, 1), "fable-5-1": (10, 50, 0.25), "fable-5-2": (8, 40, 0.2),
+               "opus-4-20250514": (15, 75, 1.5), "opus-4-1-20250805": (15, 75, 1.5),
+               "opus-4-5-20251101": (5, 25, 0.5), "opus-4-6": (5, 25, 0.5), "opus-4-7": (5, 25, 0.5),
+               "opus-4-8": (5, 25, 0.5), "opus-5": (5, 25, 0.5), "opus-5-5": (4, 20, 0.2),
+               "3-5-sonnet-20241022": (3, 15, 0.3), "3-7-sonnet-20250219": (3, 15, 0.3),
+               "sonnet-4-20250514": (3, 15, 0.3), "sonnet-4-5-20250929": (3, 15, 0.3), "sonnet-4-6": (3, 15, 0.3),
+               "sonnet-5": (2, 10, 0.2), "sonnet-5-5": (2, 10, 0.1),
+               "3-5-haiku-20241022": (0.8, 4, 0.08), "haiku-4-5-20251001": (1, 5, 0.1),
+               "haiku-5-5": (0.5, 2.5, 0.05)}                   # its long-prompt rate, see usage.py
+    for model, rates in catalog.items():
+        assert usage.model_rates(model) == rates, model
+    assert message_weight("fable-5-2", {"input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 5}) == \
+        pytest.approx(8 + 40 + 1)
+
+
+def test_a_new_release_is_weighed_like_the_newest_one_before_it_in_its_family():
+    assert usage.model_rates("fable-5-3") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("fable-6") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("fable-5-10") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("opus-5-7-20270101") == usage.model_rates("opus-5-5")
+    assert usage.model_rates("sonnet-4-9") == usage.model_rates("sonnet-4-6")
+    assert usage.model_rates("haiku-3") == usage.model_rates("3-5-haiku-20241022")   # older than all: the oldest
+    # the names transcripts carry: suffixes, "claude-" left on, a cloud provider's spelling
+    assert usage.model_rates("fable-5-2[1m]") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("claude-fable-5-2") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("us.anthropic.fable-5-2-v1:0") == usage.model_rates("fable-5-2")
+    assert usage.model_rates("fable-5-2@20261101") == usage.model_rates("fable-5-2")
+    # a family the table does not know, and the names that are not models
+    for name in ("mystery-1", "?", "<synthetic>", "", "symphonyopus-5"):
+        assert usage.model_rates(name) == usage.UNKNOWN_MODEL_WEIGHTS, name
 
 
 def _assistant(mid, cwd, at, model="claude-fable-5-1", out=100, session="s1"):
@@ -247,6 +283,22 @@ def test_bars_take_the_output_by_model_colors_without_disturbing_them(monkeypatc
     assert styles.index(blue) < styles.index(orange) < styles.index(main.MODEL_OTHER[0])     # the bar's order
     assert list(main._model_slot) == ["fable-5-1", "opus-5-5", "fable-5"]                    # what the bar names
     assert main.model_split_text(models, 48) and list(main._model_slot) == ["fable-5-1", "opus-5-5", "fable-5"]
+
+
+def test_a_new_release_gets_a_color_of_its_own_however_long_the_app_has_run(monkeypatch):
+    monkeypatch.setattr(main, "_model_slot", {})
+    color = lambda i: main.MODEL_SLOTS[i][0]
+    assert main.model_hues([("fable-5-1", 90), ("opus-5-5", 8), ("fable-5", 5)]) == \
+        {"fable-5-1": color(0), "opus-5-5": color(1), "fable-5": color(2)}
+    # a release arrives: the last free color, and everyone else keeps theirs
+    hues = main.model_hues([("fable-5-2", 50), ("fable-5-1", 40), ("opus-5-5", 8), ("fable-5", 2)])
+    assert hues == {"fable-5-2": color(3), "fable-5-1": color(0), "opus-5-5": color(1)}
+    # the next one, after Fable 5 has left the 14 days: it takes Fable 5's color, not Other's gray
+    split = [("fable-5-3", 60), ("fable-5-2", 30), ("fable-5-1", 5), ("opus-5-5", 1)]
+    assert main.model_hues(split) == {"fable-5-3": color(2), "fable-5-2": color(3), "fable-5-1": color(0)}
+    assert color(2) in {s.style for s in main.model_split_text(split, 48).spans}
+    # a model still in the 14 days keeps its color while it is out of the top three
+    assert main.model_hues([("opus-5-5", 90), ("fable-5-3", 5), ("fable-5-2", 4), ("fable-5-1", 1)])["opus-5-5"] == color(1)
 
 
 def test_stacked_cells_fill_their_width_and_nothing_vanishes():
