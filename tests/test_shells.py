@@ -144,14 +144,15 @@ def test_the_colors_say_state_and_white_names_say_yours_to_talk_to():
     assert line.spans[2].end - line.spans[2].start == 2           # a session waiting on a shell is idle
     tip = main.fleet_tooltip([idle, shell, busy, waiting], get_ordering("attention"), 0, True)
     assert "2 idle (1 waiting on a shell)" in tip
-    # sessions you can talk to have white names; anything at work is green, at rest blue
-    assert main.look_of(waiting) == main.Look(main.YELLOW, main.WHITE, main.YELLOW)
+    # a session waiting for you is yellow throughout, an idle one has a white name;
+    # anything at work is green, at rest blue
+    assert main.look_of(waiting) == main.Look(main.YELLOW, main.YELLOW, main.YELLOW)
     assert main.look_of(idle).name == main.look_of(shell).name == main.WHITE
     assert main.look_of(busy) == main.Look(main.GREEN, main.GREEN)
     assert main.look_of(Agent(agent_id="a", name="a", status="dormant")) == main.Look(main.BLUE, main.BLUE)
     assert main.look_of(Shell(pid=1, started=0, command="x")) == main.Look(main.GREEN, main.GREEN)
     row = main.instance_label(waiting, 0.0, name_width=8)
-    assert row.spans[0].style == f"bold {main.WHITE}"
+    assert row.spans[0].style == f"bold {main.YELLOW}"
 
 
 def test_the_detail_pane_lists_the_shells_with_their_commands():

@@ -261,9 +261,9 @@ def projects_text(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool
 
 
 # Row colors. A row's icon says its state, and its name whether it is yours to talk to:
-# white for a session you can give input to (waiting for you, or idle), otherwise the
-# state's own color: green at work, blue at rest, gray stopped, dark gray archived, red
-# unreadable. The summary is colored only when it needs you (yellow) or is over.
+# yellow for a session waiting for you, white for an idle one you can give input to,
+# otherwise the state's own color: green at work, blue at rest, gray stopped, dark gray
+# archived, red unreadable. The summary is colored only when it needs you (yellow) or is over.
 GREEN, BLUE, YELLOW, WHITE = "#00d75f", "#5f87ff", "#ffd75f", "#eeeeee"
 GRAY, DARK_GRAY, RED = "#8a8a8a", "#626262", "#ff5f5f"
 
@@ -276,7 +276,7 @@ class Look:
 
 
 SESSION_LOOK = {
-    "waiting": Look(YELLOW, WHITE, YELLOW),     # needs you: permission prompt, question, plan approval
+    "waiting": Look(YELLOW, YELLOW, YELLOW),    # needs you: permission prompt, question, plan approval
     "busy": Look(GREEN, GREEN),                 # working on your input
     "idle": Look(BLUE, WHITE),                  # finished, ready for your next instruction
     "shell": Look(BLUE, WHITE),                 # idle while a command it started runs

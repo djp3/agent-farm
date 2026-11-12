@@ -27,5 +27,5 @@ def test_a_selected_waiting_row_keeps_its_yellow_summary_on_a_navy_bar():
             await pilot.press("q")
 
     asyncio.run(go())
-    assert seen["asks-you"] == (main.WHITE, "#1f3b5c")
+    assert seen["asks-you"] == (main.YELLOW, "#1f3b5c")
     assert seen["AskUserQue"] == (main.YELLOW, "#1f3b5c")

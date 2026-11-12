@@ -22,8 +22,8 @@ is doing before you open it.
 ### The whole team at a glance
 
 Subagents and teammates nest under their lead, with the commands they have running beneath
-whoever started them. Green is at work, blue is at rest, gray has stopped, and a white name
-means you can step in. You can spot a stuck subagent without opening a single transcript.
+whoever started them. Green is at work, blue is at rest, gray has stopped, a yellow name is
+waiting for you, and a white one means you can step in. You can spot a stuck subagent without opening a single transcript.
 
 ### See where your week went
 
@@ -124,13 +124,13 @@ get triangles, shells a circle:
 | ▷ | an agent with nothing beneath it |
 | ◐ | a shell: a command an agent started, still running |
 
-The colors follow one rule. The icon says what the row is doing. The name is **white for
-a session you can talk to**, waiting for your input or idle, and otherwise takes the
-state's color. The summary after it is colored only when it needs you or is over:
+The colors follow one rule. The icon says what the row is doing. The name is **yellow for
+a session waiting for your input** and **white for an idle one you can talk to**, and
+otherwise takes the state's color. The summary after it is colored only when it needs you or is over:
 
 | state | icon | name | summary |
 |-------|------|------|---------|
-| session **waiting** for your input (permission prompt, question, plan approval) | yellow | white | yellow |
+| session **waiting** for your input (permission prompt, question, plan approval) | yellow | yellow | yellow |
 | session **busy**; subagent **running** or **starting**; shell **running** | green | green | default |
 | session **idle**, or idle while a command it started runs | blue | white | default |
 | subagent **dormant** (finished, can be messaged again), or waiting on its own command | blue | blue | default |
@@ -139,7 +139,8 @@ state's color. The summary after it is colored only when it needs you or is over
 | subagent **archived** (from an earlier run, log only), and the archive row | dark gray | dark gray | dark gray |
 | session agent-farm could not read (see the log) | red | red | red |
 
-So green is at work, blue at rest, gray stopped, and white names are where you can step in.
+So green is at work, blue at rest, gray stopped, yellow names are waiting for you, and white
+names are where you can step in.
 The selected row keeps its colors on a navy bar.
 
 After the name comes the **agent strip** column: a cyan `⧉` first when the session runs
