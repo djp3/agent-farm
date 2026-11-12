@@ -259,7 +259,7 @@ def test_two_columns_with_the_expiring_pane_as_tall_as_the_farm_chart(tmp_path):
         # tab to the pane: the detail pane follows its selected session, and k keeps it
         await pilot.press("tab")
         await pilot.pause(0.2)
-        detail = str(app.query_one("#detail").render())
+        detail = str(app.query_one("#detail-body").render())
         assert detail.startswith("due tomorrow") and "claude --resume aaaa1111-due" in detail
         await pilot.press("k")
         await pilot.pause(0.5)
@@ -268,7 +268,7 @@ def test_two_columns_with_the_expiring_pane_as_tall_as_the_farm_chart(tmp_path):
         assert pane.entries[0].kept_at and "kept · safe until" in pane.render().plain
         await pilot.press("tab")                                        # back to the tree
         await pilot.pause(0.2)
-        assert not str(app.query_one("#detail").render()).startswith("due tomorrow")
+        assert not str(app.query_one("#detail-body").render()).startswith("due tomorrow")
 
     _app_test(tmp_path, (140, 46), Settings(), steps)
 

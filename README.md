@@ -186,6 +186,9 @@ long, what it is for, the agent that started it, and the whole command. While th
 pane has focus, the detail pane shows its selected session instead: when it was last used
 and when it expires, its folder, its size, and the command that resumes it.
 
+When there is more than fits, the mouse wheel or trackpad scrolls the pane. It keeps its
+place as the row updates and starts at the top for each row you pick.
+
 ### The expiring pane
 
 Claude Code deletes a session 30 days after its last use: its transcript, subagents and

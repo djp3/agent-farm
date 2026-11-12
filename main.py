@@ -1508,8 +1508,8 @@ class SettingsScreen(Screen):
         self.app.pop_screen()
 
 
-class UsageScroll(VerticalScroll, can_focus=False):
-    """The wheel scrolls it; tab goes on from the tree to the expiring pane."""
+class WheelScroll(VerticalScroll, can_focus=False):
+    """The wheel scrolls it; tab goes past it, so focus stays with the lists."""
 
 
 class Divider(Widget):
@@ -1583,7 +1583,8 @@ class AgentFarm(App):
     #projects.alone { height: 1fr; border-top: none; }
     #farm { padding: 0 1; border-top: solid $primary-darken-2; }
     #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;
-              padding: 0 1; overflow-y: auto; }
+              scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
+    #detail-body { height: auto; padding: 0 0 0 1; }
     #detail.hidden { display: none; }
     #expiring { padding: 0 1; border-top: solid $primary-darken-2; }
     #expiring.hidden { display: none; }
@@ -1633,6 +1634,7 @@ class AgentFarm(App):
         self.nodes: dict[str, TreeNode] = {}        # key -> node
         self.objects: dict[str, object] = {}        # key -> Instance | Agent
         self.detail_forced: bool | None = None      # None = auto by height
+        self._detail_shows: object = None            # what the detail pane is about, kept scrolled
         self.last_snapshot_at = 0.0
         self.instances: list[Instance] = []
         logging.getLogger("agent_farm").addHandler(errors)
@@ -1654,13 +1656,14 @@ class AgentFarm(App):
                 tree.show_root = False
                 tree.guide_depth = GUIDE_DEPTH
                 yield tree
-                yield Static("", id="detail")
+                with WheelScroll(id="detail"):          # text longer than the pane scrolls
+                    yield Static("", id="detail-body")
                 expiring = ExpiringPane(id="expiring")
                 expiring.styles.height = BOTTOM_ROWS
                 yield expiring
             yield Divider(id="divider")
             with Vertical(id="usage"):                  # scrolls above; the farm chart stays put below
-                with UsageScroll(id="usage-scroll"):
+                with WheelScroll(id="usage-scroll"):
                     yield Static("", id="usage-body")
                 yield Static("", id="projects")
                 farm = Static("", id="farm")
@@ -1712,7 +1715,7 @@ class AgentFarm(App):
 
     def _apply_detail_visibility(self) -> None:
         show = self.detail_forced if self.detail_forced is not None else self.size.height >= SHORT_ROWS
-        self.query_one("#detail", Static).set_class(not show, "hidden")
+        self.query_one("#detail").set_class(not show, "hidden")
         show_u = self._panel_open()
         usage = self.query_one("#usage")
         usage.set_class(not show_u, "hidden")
@@ -2162,22 +2165,30 @@ class AgentFarm(App):
     def _refresh_detail(self, node: TreeNode | None = None) -> None:
         try:
             tree = self.query_one("#tree", Tree)
-            detail = self.query_one("#detail", Static)
+            detail = self.query_one("#detail-body", Static)
             pane = self.query_one("#expiring", ExpiringPane)
         except NoMatches:
             return
         if pane.has_focus:                     # the detail pane follows whichever list has focus
             e = pane.selected
+            self._detail_about(("expiring", e.session_id if e else None))
             live = e is not None and any(i.alive and i.session_id == e.session_id for i in self.instances)
             detail.update(expiring_detail(e, time.time(), pane.period, live) if e
                           else Text("nothing expires in the next two weeks", style="dim"))
             return
         node = node or tree.cursor_node
+        self._detail_about(node.data if node else None)
         if node is None or node.data is None:
             detail.update(Text("select an instance", style="dim"))
             return
         obj = self.objects.get(node.data)
         detail.update(detail_text(obj, time.time()) if obj else Text(""))
+
+    def _detail_about(self, subject: object) -> None:
+        """A new subject starts at the top; the same one keeps its place as it refreshes."""
+        if subject != self._detail_shows:
+            self._detail_shows = subject
+            self.query_one("#detail", WheelScroll).scroll_home(animate=False)
 
     # ---- actions ----------------------------------------------------------
     def action_settings(self) -> None:
@@ -2199,7 +2210,7 @@ class AgentFarm(App):
         self.call_later(lambda: self.apply_snapshot(list(self.instances)) if self.instances else None)
 
     def action_toggle_detail(self) -> None:
-        detail = self.query_one("#detail", Static)
+        detail = self.query_one("#detail")
         self.detail_forced = detail.has_class("hidden")   # hidden -> force show, shown -> force hide
         self._apply_detail_visibility()
 
