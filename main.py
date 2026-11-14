@@ -248,7 +248,7 @@ def projects_text(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool
     rows += [(n, None, total * p / 100.0) for n, p in surfaces]
     labels = [" ".join(clean_text(r[0]).split()) for r in rows]
     label_w = min(PROJECT_LABEL_W, max(len(s) for s in labels))
-    bar_w = max(6, width - label_w - 1 - 1 - 5)
+    bar_w = max(6, width - label_w - 1 - 1 - 6)            # the value: "100.0%" at most
     # the models keep their order and look from the output-by-model bar, which names only a few
     look, order = _model_look([(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0])
     for label, (_, parts, pct) in zip(labels, rows):
@@ -260,7 +260,7 @@ def projects_text(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool
             size = sum(parts.values()) or 1.0
             bars = [(*look(m), cells * n / size) for m, n in sorted(parts.items(), key=lambda kv: order(kv[0]))]
         t.append_text(_stack_cells(bars, bar_w))
-        t.append(f" {_project_value(pct):>5}\n")
+        t.append(f" {_project_value(pct):>6}\n")
     return t
 
 

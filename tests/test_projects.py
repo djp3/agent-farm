@@ -255,6 +255,8 @@ def test_without_a_current_week_it_shows_percents_of_the_last_7_days(monkeypatch
     after_reset = main.projects_text(scan, _report(), True, 48, now=RESET.timestamp() + 60).plain
     assert after_reset.startswith("Projects · last 7 days")
     assert main.projects_text(scan, LimitsReport(), True, 48, now=NOW).plain.startswith("Projects · last 7 days")
+    alone = main.projects_text(FakeScanner({"acme/a": Counter({"fable-5-1": 1.0})}), None, False, 48, now=NOW).plain
+    assert alone.splitlines()[1].endswith(" 100.0%") and all(len(line) <= 48 for line in alone.splitlines())
 
 
 def test_a_new_week_that_still_reads_0_percent_shows_the_last_7_days_not_nothing(monkeypatch):
