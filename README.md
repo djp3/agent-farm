@@ -74,14 +74,14 @@ Under the title bar, two columns. On the left, from top to bottom:
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
 - **The tree**: one row per head session, ordered so that what needs you is at the top,
   with subagents nested beneath their lead and the shells each agent is running beneath it.
-- **The detail pane**: everything known about the selected row.
 - **The expiring pane**: the sessions Claude Code will delete next, each with a keep button.
+- **The detail pane**: everything known about the selected row.
 
 On the right, **the usage panel**, down the full height of the window: at the top how many
 agents were at work in each of the last 24 hours, under it how the week's limit was spent
 across your projects (press `p`), and below them your token usage per day and per model
-(press `u`), which takes the rest of the column. With both graphs hidden the panel closes
-and the left column takes the whole width. Drag the line between the columns (the pointer
+(press `u`), which starts on the same row as the detail pane and runs to the bottom. With
+both graphs hidden the panel closes and the left column takes the whole width. Drag the line between the columns (the pointer
 turns into resize arrows over it) to make the panel wider or narrower; it remembers the
 width, and a narrower window never squeezes the session list or the panel past their
 smallest.
@@ -196,8 +196,8 @@ place as the row updates and starts at the top for each row you pick.
 Claude Code deletes a session 30 days after its last use: its transcript, subagents and
 tool results go at the first cleanup after that, and a cleanup runs a few minutes after any
 Claude Code session starts. (The period is `cleanupPeriodDays` in `~/.claude/settings.json`;
-0 means never, and the pane says so.) The pane at the bottom of the left column lists the
-sessions that turn that old within two weeks, soonest first.
+0 means never, and the pane says so.) The pane between the session list and the detail
+pane shows the sessions that turn that old within two weeks, soonest first.
 
 At the top a chart counts them per day for the next two weeks, today at the left. Below it
 each session has its name (the one `/resume` shows), when it expires (turns 30 days old;

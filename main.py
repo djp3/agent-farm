@@ -60,6 +60,7 @@ LIMITS_POLL_S = 300.0   # plan limits: at most one fetch per this many seconds, 
 _monotonic = time.monotonic   # the plan-limit gate's clock; tests replace this, not time.monotonic
 LIMITS_REDRAW_S = 60.0  # while idle nothing else redraws the panel; keep its age and "paused" current
 SHORT_ROWS = 22        # below this many rows the detail pane hides itself
+DETAIL_MIN_ROWS = 8    # the detail pane gives up rows to line up with the usage graph, down to this
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_MIN_W = 32        # the usage column at its narrowest: its text stops shrinking at 30
 LEFT_MIN_W = 40         # a dragged divider leaves the session list at least this wide
@@ -1033,8 +1034,8 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
 
 
 # The expiring pane: the sessions Claude Code deletes next (see expiring.py), soonest first,
-# under a chart of how many turn old on each of the next two weeks' days. It sits at the
-# bottom of the left column.
+# under a chart of how many turn old on each of the next two weeks' days. It sits under the
+# session list, above the detail pane.
 EXPIRY_SCAN_S = 60.0
 EXPIRY_CHART_ROWS = 3
 EXPIRY_HEAD_ROWS = 1 + EXPIRY_CHART_ROWS + 1   # title, chart, weekday labels
@@ -1580,6 +1581,7 @@ class AgentFarm(App):
     Divider:hover, Divider.-dragging { border-left: solid $primary-lighten-2; }
     Divider.hidden { display: none; }
     /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
+    #charts { height: auto; }                   /* _line_up sets it so the usage graph meets the detail pane */
     #farm { padding: 0 1; }
     #projects { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
     #projects.hidden { display: none; }
@@ -1587,7 +1589,7 @@ class AgentFarm(App):
                     scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
     #usage-scroll.hidden { display: none; }
     #usage-body { height: auto; padding: 0 0 0 1; }
-    #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;
+    #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;    /* _line_up sets it */
               scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
     #detail-body { height: auto; padding: 0 0 0 1; }
     #detail.hidden { display: none; }
@@ -1655,23 +1657,24 @@ class AgentFarm(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="body"):
-            with Vertical(id="left"):                   # the tree, the selected row, what expires
+            with Vertical(id="left"):                   # the tree, what expires, the selected row
                 yield Static(Text("starting…", style="dim"), id="fleet")
                 tree: Tree = AgentTree("Claude instances", id="tree", look_lookup=self._look_for_key)
                 tree.show_root = False
                 tree.guide_depth = GUIDE_DEPTH
                 yield tree
-                with WheelScroll(id="detail"):          # text longer than the pane scrolls
-                    yield Static("", id="detail-body")
                 expiring = ExpiringPane(id="expiring")
                 expiring.styles.height = BOTTOM_ROWS
                 yield expiring
+                with WheelScroll(id="detail"):          # text longer than the pane scrolls
+                    yield Static("", id="detail-body")
             yield Divider(id="divider")
             with Vertical(id="usage"):                  # the two charts stay put; the usage graph scrolls below
-                farm = Static("", id="farm")
-                farm.styles.height = FARM_ROWS          # a fixed height: the graphs below never jump
-                yield farm
-                yield Static("", id="projects")
+                with Vertical(id="charts"):
+                    farm = Static("", id="farm")
+                    farm.styles.height = FARM_ROWS      # a fixed height: the graphs below never jump
+                    yield farm
+                    yield Static("", id="projects")
                 with WheelScroll(id="usage-scroll"):
                     yield Static("", id="usage-body")
         yield Footer()
@@ -1685,6 +1688,7 @@ class AgentFarm(App):
                 pass
         self.query_one("#tree", Tree).focus()
         self._apply_detail_visibility()
+        self.call_after_refresh(self._line_up)          # the columns have their height once laid out
         self._set_window_title(WINDOW_TITLE)
         self.collector.start()
         self.render_usage()
@@ -1741,6 +1745,33 @@ class AgentFarm(App):
                 self.render_expiring()
             elif pane.has_focus:
                 self.query_one("#tree", Tree).focus()
+        self._line_up()
+
+    def _line_up(self) -> None:
+        """Start the usage graph on the row where the detail pane starts, at the bottom of the
+        left column, so one line runs across the window. The charts above it take the room that
+        leaves. In a window too short for them the detail pane gives up rows, down to
+        DETAIL_MIN_ROWS, to keep the line. With the detail pane or the usage graph hidden there is
+        nothing to line up: the detail pane takes its 40% of the column and the charts their
+        own height."""
+        try:
+            body, detail = self.query_one("#body"), self.query_one("#detail")
+            charts, projects = self.query_one("#charts"), self.query_one("#projects")
+        except NoMatches:
+            return
+        h = body.size.height
+        if not h:                                      # not laid out yet; on_mount comes back
+            return
+        detail_h = max(DETAIL_MIN_ROWS, h * 2 // 5)
+        top = None
+        if self.usage_forced and not detail.has_class("hidden"):
+            need = FARM_ROWS + (projects.outer_size.height if self.projects_forced else 0)
+            detail_h = max(DETAIL_MIN_ROWS, min(detail_h, h - need))
+            top = h - detail_h
+            if top < need:                             # too short even so: the charts keep their rows
+                top = None
+        detail.styles.height = detail_h                # a style set to what it is already is no refresh
+        charts.styles.height = top if top is not None else "auto"
 
     # ---- data -------------------------------------------------------------
     def _on_ui(self, fn, *args, **kwargs) -> None:
@@ -1891,6 +1922,7 @@ class AgentFarm(App):
                                    self.limits.report(), self.settings.show_limits, self._limits_polling()))
         if self.projects_forced:
             projects.update(projects_text(self.usage, self.limits.report(), self.settings.show_limits, width))
+            self.call_after_refresh(self._line_up)     # its height once laid out
         self.render_farm()
 
     def render_farm(self) -> None:
