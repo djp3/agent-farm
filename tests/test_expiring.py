@@ -258,7 +258,7 @@ def test_two_columns_with_the_expiring_pane_over_the_detail_pane_and_the_farm_ch
         assert app.query_one("#detail").region.bottom == left.region.bottom
         assert farm.outer_size.height == main.FARM_ROWS and farm.region.y == usage_col.region.y
         assert usage_col.region.height == left.region.height
-        assert app.query_one("#usage-scroll").region.y == app.query_one("#detail").region.y   # one line across
+        assert app.query_one("#usage-scroll").region.y == pane.region.y                   # one line across
         assert [e.title for e in pane.entries] == ["due tomorrow", "next week"]
         # tab to the pane: the detail pane follows its selected session, and k keeps it
         await pilot.press("tab")

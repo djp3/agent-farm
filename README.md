@@ -80,7 +80,7 @@ Under the title bar, two columns. On the left, from top to bottom:
 On the right, **the usage panel**, down the full height of the window: at the top how many
 agents were at work in each of the last 24 hours, under it how the week's limit was spent
 across your projects (press `p`), and below them your token usage per day and per model
-(press `u`), which starts on the same row as the detail pane and runs to the bottom. With
+(press `u`), which starts on the same row as the expiring pane and runs to the bottom. With
 both graphs hidden the panel closes and the left column takes the whole width. Drag the line between the columns (the pointer
 turns into resize arrows over it) to make the panel wider or narrower; it remembers the
 width, and a narrower window never squeezes the session list or the panel past their

@@ -375,12 +375,12 @@ def test_u_and_p_turn_their_graphs_on_and_off_and_the_panel_closes_with_both_off
         scroll = app.query_one("#usage-scroll")                       # the usage graph below them, to the bottom
         assert farm.region.y == usage_col.region.y and projects.region.bottom <= scroll.region.y
         assert scroll.region.bottom == usage_col.region.bottom
-        assert scroll.region.y == app.query_one("#detail").region.y    # on the row the detail pane starts
+        assert scroll.region.y == app.query_one("#expiring").region.y  # on the row the expiring pane starts
         assert "Usage" in str(app.query_one("#usage-body").render())
         await pilot.press("p")
         await pilot.pause(0.2)
         assert _shown(app, "#usage-scroll") and not _shown(app, "#projects")
-        assert scroll.region.y == app.query_one("#detail").region.y    # still on that row
+        assert scroll.region.y == app.query_one("#expiring").region.y  # still on that row
         await pilot.press("u")
         await pilot.pause(0.2)
         assert not _shown(app, "#usage")
@@ -406,13 +406,15 @@ def test_with_both_on_the_usage_graph_scrolls_and_the_project_graph_stays_in_vie
     _run_app(tmp_path, monkeypatch, Settings(show_usage=True, show_projects=True), steps, size=(140, 36))
 
 
-def test_the_usage_graph_starts_on_the_row_the_detail_pane_does(tmp_path, monkeypatch):
+def test_the_usage_graph_starts_on_the_row_the_expiring_pane_does(tmp_path, monkeypatch):
     async def steps(app, pilot):
         await pilot.pause(0.5)
         scroll, detail, projects = app.query_one("#usage-scroll"), app.query_one("#detail"), app.query_one("#projects")
+        expiring = app.query_one("#expiring")
 
         def lined_up():
-            return (scroll.region.y == detail.region.y and projects.region.bottom <= scroll.region.y
+            under_tree = expiring if expiring.display else detail     # the first pane under the session list
+            return (scroll.region.y == under_tree.region.y and projects.region.bottom <= scroll.region.y
                     and detail.outer_size.height >= main.DETAIL_MIN_ROWS)
         assert lined_up()
         await pilot.press("d")                     # no detail pane: the usage graph follows the charts
@@ -421,10 +423,11 @@ def test_the_usage_graph_starts_on_the_row_the_detail_pane_does(tmp_path, monkey
         await pilot.press("d")
         await pilot.pause(0.2)
         assert lined_up()
-    # a tall window, one where the detail pane has rows to spare, and one where it gives some up
-    for rows in (100, 46, 36):
-        _run_app(tmp_path / str(rows), monkeypatch, Settings(show_usage=True, show_projects=True), steps,
-                 size=(140, rows))
+    # a tall window, one where the detail pane has rows to spare, one where it gives some up,
+    # and one without the expiring pane, where the line is the detail pane's top
+    for rows, expiring in ((100, True), (46, True), (36, True), (46, False)):
+        _run_app(tmp_path / f"{rows}-{expiring}", monkeypatch,
+                 Settings(show_usage=True, show_projects=True, show_expiring=expiring), steps, size=(140, rows))
 
 
 def test_plan_limits_are_fetched_for_the_project_graph_alone():

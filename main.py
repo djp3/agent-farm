@@ -1748,26 +1748,29 @@ class AgentFarm(App):
         self._line_up()
 
     def _line_up(self) -> None:
-        """Start the usage graph on the row where the detail pane starts, at the bottom of the
-        left column, so one line runs across the window. The charts above it take the room that
-        leaves. In a window too short for them the detail pane gives up rows, down to
-        DETAIL_MIN_ROWS, to keep the line. With the detail pane or the usage graph hidden there is
-        nothing to line up: the detail pane takes its 40% of the column and the charts their
-        own height."""
+        """Start the usage graph on the row where the panes under the session list start: the
+        expiring pane, or the detail pane when the expiring pane is hidden. One line then runs
+        across the window, and the charts above it take the room that leaves. In a window too
+        short for them the detail pane gives up rows, down to DETAIL_MIN_ROWS, to keep the line.
+        With the detail pane or the usage graph hidden there is nothing to line up: the detail
+        pane takes its 40% of the column and the charts their own height. (Lining up with the
+        expiring pane alone would leave the usage graph its few rows.)"""
         try:
             body, detail = self.query_one("#body"), self.query_one("#detail")
             charts, projects = self.query_one("#charts"), self.query_one("#projects")
+            expiring = self.query_one("#expiring")
         except NoMatches:
             return
         h = body.size.height
         if not h:                                      # not laid out yet; on_mount comes back
             return
+        above = 0 if expiring.has_class("hidden") else BOTTOM_ROWS    # the expiring pane, over the detail pane
         detail_h = max(DETAIL_MIN_ROWS, h * 2 // 5)
         top = None
         if self.usage_forced and not detail.has_class("hidden"):
             need = FARM_ROWS + (projects.outer_size.height if self.projects_forced else 0)
-            detail_h = max(DETAIL_MIN_ROWS, min(detail_h, h - need))
-            top = h - detail_h
+            detail_h = max(DETAIL_MIN_ROWS, min(detail_h, h - above - need))
+            top = h - detail_h - above
             if top < need:                             # too short even so: the charts keep their rows
                 top = None
         detail.styles.height = detail_h                # a style set to what it is already is no refresh
