@@ -345,18 +345,21 @@ def test_u_and_p_turn_their_graphs_on_and_off_and_the_panel_closes_with_both_off
         await pilot.pause(0.2)
         assert _shown(app, "#usage") and _shown(app, "#projects") and not _shown(app, "#usage-scroll")
         usage_col, projects, farm = app.query_one("#usage"), app.query_one("#projects"), app.query_one("#farm")
-        assert projects.region.y == usage_col.region.y                # at the top, the farm stays at the bottom
-        assert farm.region.bottom == usage_col.region.bottom
+        assert farm.region.y == usage_col.region.y                    # the farm on top, the projects under it
+        assert projects.region.y == farm.region.bottom
         drawn = str(projects.render()).splitlines()
         assert drawn[0].startswith("Projects") and drawn[1].startswith("a ")
         await pilot.press("u")
         await pilot.pause(0.2)
         assert _shown(app, "#usage-scroll") and _shown(app, "#projects")
-        assert app.query_one("#usage-scroll").region.bottom <= projects.region.y     # the project graph is below
+        scroll = app.query_one("#usage-scroll")                       # the usage graph below them, to the bottom
+        assert farm.region.y == usage_col.region.y and projects.region.bottom <= scroll.region.y
+        assert scroll.region.bottom == usage_col.region.bottom
         assert "Usage" in str(app.query_one("#usage-body").render())
         await pilot.press("p")
         await pilot.pause(0.2)
         assert _shown(app, "#usage-scroll") and not _shown(app, "#projects")
+        assert scroll.region.y == farm.region.bottom                  # straight under the farm
         await pilot.press("u")
         await pilot.pause(0.2)
         assert not _shown(app, "#usage")
@@ -371,7 +374,7 @@ def test_with_both_on_the_usage_graph_scrolls_and_the_project_graph_stays_in_vie
         await pilot.pause(0.3)
         scroll, projects, usage_col = app.query_one("#usage-scroll"), app.query_one("#projects"), app.query_one("#usage")
         assert scroll.max_scroll_y > 0
-        assert usage_col.region.y < projects.region.y < app.query_one("#farm").region.y
+        assert usage_col.region.y == app.query_one("#farm").region.y < projects.region.y < scroll.region.y
         scroll.scroll_end(animate=False)
         await pilot.pause(0.2)
         assert scroll.scroll_y > 0

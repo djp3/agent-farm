@@ -247,14 +247,15 @@ def _app_test(tmp_path, size, settings, steps):
     asyncio.run(go())
 
 
-def test_two_columns_with_the_expiring_pane_as_tall_as_the_farm_chart(tmp_path):
+def test_two_columns_with_the_expiring_pane_at_the_bottom_left_and_the_farm_chart_top_right(tmp_path):
     async def steps(app, pilot, root):
-        left = app.query_one("#left")
+        left, usage_col = app.query_one("#left"), app.query_one("#usage")
         assert [w.id for w in left.children] == ["fleet", "tree", "detail", "expiring"]
+        assert [w.id for w in usage_col.children] == ["farm", "projects", "usage-scroll"]
         pane, farm = app.query_one("#expiring"), app.query_one("#farm")
-        assert pane.outer_size.height == farm.outer_size.height == main.BOTTOM_ROWS
-        assert pane.region.y == farm.region.y                          # the lines above them meet
-        assert app.query_one("#usage").region.height == left.region.height
+        assert pane.outer_size.height == main.BOTTOM_ROWS and pane.region.bottom == left.region.bottom
+        assert farm.outer_size.height == main.FARM_ROWS and farm.region.y == usage_col.region.y
+        assert usage_col.region.height == left.region.height
         assert [e.title for e in pane.entries] == ["due tomorrow", "next week"]
         # tab to the pane: the detail pane follows its selected session, and k keeps it
         await pilot.press("tab")

@@ -952,6 +952,7 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
 # running in that hour. The stem and the box-drawing sprout are drawn by the terminal itself
 # (SwiftTerm draws U+2500-257F), and SF Mono has the grain head.
 ACTIVITY_ROWS = 6
+FARM_ROWS = ACTIVITY_ROWS + 4          # chart title, rows, axis, hour labels, blank
 FARM_REDRAW_S = 60.0    # the chart moves with the clock, so it redraws on its own too
 STALK, SPROUT, GRAIN = "┃", "╻", "Ψ"
 STALK_HUE, GRAIN_HUE = "#5faf5f", "#e5b45a"        # green stem, ripe grain
@@ -1029,12 +1030,12 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
 
 # The expiring pane: the sessions Claude Code deletes next (see expiring.py), soonest first,
 # under a chart of how many turn old on each of the next two weeks' days. It sits at the
-# bottom of the left column as tall as the agents-at-work chart beside it, so the lines
-# above the two meet across the window.
-BOTTOM_ROWS = ACTIVITY_ROWS + 5        # chart title, rows, axis, hour labels, blank, border
+# bottom of the left column.
 EXPIRY_SCAN_S = 60.0
 EXPIRY_CHART_ROWS = 3
 EXPIRY_HEAD_ROWS = 1 + EXPIRY_CHART_ROWS + 1   # title, chart, weekday labels
+EXPIRY_LIST_ROWS = 5
+BOTTOM_ROWS = 1 + EXPIRY_HEAD_ROWS + EXPIRY_LIST_ROWS   # the border, the chart, five sessions
 EXPIRY_NAME_W = 28
 EXPIRY_WHEN_W = 14                     # "expires today", "expires Nov 14", "expired"
 DAY_BLOCK, DAY_NONE = "██", "▁▁"
@@ -1575,13 +1576,13 @@ class AgentFarm(App):
     Divider:hover, Divider.-dragging { border-left: solid $primary-lighten-2; }
     Divider.hidden { display: none; }
     /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
-    #usage-scroll { height: 1fr; scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
-    #usage-scroll.hidden { display: none; }
-    #usage-body { height: auto; padding: 0 0 0 1; }
+    #farm { padding: 0 1; }
     #projects { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
     #projects.hidden { display: none; }
-    #projects.alone { height: 1fr; border-top: none; }
-    #farm { padding: 0 1; border-top: solid $primary-darken-2; }
+    #usage-scroll { height: 1fr; border-top: solid $primary-darken-2;
+                    scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
+    #usage-scroll.hidden { display: none; }
+    #usage-body { height: auto; padding: 0 0 0 1; }
     #detail { height: 40%; min-height: 8; border-top: solid $primary-darken-2;
               scrollbar-gutter: stable; scrollbar-size-vertical: 1; }
     #detail-body { height: auto; padding: 0 0 0 1; }
@@ -1662,13 +1663,13 @@ class AgentFarm(App):
                 expiring.styles.height = BOTTOM_ROWS
                 yield expiring
             yield Divider(id="divider")
-            with Vertical(id="usage"):                  # scrolls above; the farm chart stays put below
+            with Vertical(id="usage"):                  # the two charts stay put; the usage graph scrolls below
+                farm = Static("", id="farm")
+                farm.styles.height = FARM_ROWS          # a fixed height: the graphs below never jump
+                yield farm
+                yield Static("", id="projects")
                 with WheelScroll(id="usage-scroll"):
                     yield Static("", id="usage-body")
-                yield Static("", id="projects")
-                farm = Static("", id="farm")
-                farm.styles.height = BOTTOM_ROWS        # as tall as the expiring pane: their tops meet
-                yield farm
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1724,7 +1725,6 @@ class AgentFarm(App):
         self.query_one("#usage-scroll").set_class(not self.usage_forced, "hidden")
         projects = self.query_one("#projects", Static)
         projects.set_class(not self.projects_forced, "hidden")
-        projects.set_class(not self.usage_forced, "alone")
         if show_u and usage.size.width and usage.size.width != self._usage_width:
             self.render_usage()
         # The expiring pane follows its setting, and steps aside in a window too short to

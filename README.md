@@ -77,13 +77,14 @@ Under the title bar, two columns. On the left, from top to bottom:
 - **The detail pane**: everything known about the selected row.
 - **The expiring pane**: the sessions Claude Code will delete next, each with a keep button.
 
-On the right, **the usage panel**, down the full height of the window: your token usage per
-day and per model (press `u`), how the week's limit was spent across your projects (press
-`p`), and at the bottom how many agents were at work in each of the last 24 hours, as tall as
-the expiring pane beside it. With both graphs hidden the panel closes and the left column
-takes the whole width. Drag the line between the columns (the pointer turns into resize
-arrows over it) to make the panel wider or narrower; it remembers the width, and a narrower
-window never squeezes the session list or the panel past their smallest.
+On the right, **the usage panel**, down the full height of the window: at the top how many
+agents were at work in each of the last 24 hours, under it how the week's limit was spent
+across your projects (press `p`), and below them your token usage per day and per model
+(press `u`), which takes the rest of the column. With both graphs hidden the panel closes
+and the left column takes the whole width. Drag the line between the columns (the pointer
+turns into resize arrows over it) to make the panel wider or narrower; it remembers the
+width, and a narrower window never squeezes the session list or the panel past their
+smallest.
 
 The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
 Dock, Mission Control and the window switcher show whether the farm needs you.
@@ -213,9 +214,9 @@ it, the tool results, and the session's checkpoints, environment and task list. 
 written into any file, and resuming a session keeps it too. A kept session shows green for
 a minute, with the date it is safe until, and then leaves the list.
 
-The pane is as tall as the agents-at-work chart beside it and scrolls when the sessions do
-not all fit. It hides itself in a short window, and the **Expiring pane** setting turns it
-off, leaving the left column to the tree and the detail pane.
+The pane has room for about five sessions and scrolls when they do not all fit. It hides
+itself in a short window, and the **Expiring pane** setting turns it off, leaving the left
+column to the tree and the detail pane.
 
 ### Ordering
 
@@ -316,7 +317,7 @@ the organization ID the balance request needs come from the profile Claude Code 
 `~/.claude.json`, the only values taken from that file. The block is off by default, and while
 it is off it makes no network request.
 
-**Projects.** Press `p` for how the week's percent was spent, on its own or below the usage
+**Projects.** Press `p` for how the week's percent was spent, on its own or above the usage
 graph: one row per GitHub repo, largest first, with the five largest named. The rows add up
 to the `week` bar, so with the week at 40% a project at 30% used most of it. Chats and Cowork
 have no folder, so each gets a row of its own. A worktree counts toward its repo and two
@@ -333,7 +334,7 @@ your copy of agent-farm counts at the rates of the version before it). No money 
 plan limits off, or for a moment after the week resets, the rows are percents of the last 7
 days' use instead.
 
-**Agents at work.** Pinned to the bottom of the panel, one wheat stalk per clock hour for
+**Agents at work.** Pinned to the top of the panel, one wheat stalk per clock hour for
 the last 24 hours, the current hour at the right. A stalk's height is how many agents
 (sessions and subagents together) were running in that hour on average: three agents that
 each ran for half an hour make 1.5. An hour with a little work that rounds to nothing still
