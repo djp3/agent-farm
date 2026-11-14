@@ -1,4 +1,4 @@
-# 🌾 agent-farm
+# 🌾 agent-farm 🐓🐓🐓
 
 **Run a dozen Claude Code agents without dealing with a dozen tabs.**
 
