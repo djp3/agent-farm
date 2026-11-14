@@ -257,11 +257,29 @@ def test_without_a_current_week_it_shows_percents_of_the_last_7_days(monkeypatch
     assert main.projects_text(scan, LimitsReport(), True, 48, now=NOW).plain.startswith("Projects · last 7 days")
 
 
+def test_a_new_week_that_still_reads_0_percent_shows_the_last_7_days_not_nothing(monkeypatch):
+    """The server gives whole percents, so for the first hours of a week it reads 0% while work
+    goes on. Nothing is scaled by that 0: the graphs read as they do without a week."""
+    monkeypatch.setattr(main, "_model_slot", {})
+    zero = LimitsReport((Window("weekly_all:", "week", 0.0, RESET, 7 * 86400),), "", NOW)
+    scan = FakeScanner({"acme/a": Counter({"fable-5-1": 3.0}), "acme/b": Counter({"fable-5-1": 1.0})})
+    plain = main.projects_text(scan, zero, True, 48, now=NOW).plain
+    assert plain.splitlines()[0] == "Projects · last 7 days · % of use"
+    assert _values(plain) == [75.0, 25.0]
+    assert scan.since == NOW - 7 * 86400
+    assert main.week_parts(scan, zero, True, now=NOW) == []
+    text = main.usage_text(DayScanner([1.0] * 14), 0, 48, zero, True, now=NOW)
+    assert "est. share of use" in text.plain.splitlines()[0]
+    assert all(row.rstrip().endswith("7.1%") for row in _day_rows(text))     # each day 1/14 of the use
+    one = LimitsReport((Window("weekly_all:", "week", 1.0, RESET, 7 * 86400),), "", NOW)
+    assert main.projects_text(scan, one, True, 48, now=NOW).plain.startswith("Projects · week 1% · estimated")
+
+
 def test_nothing_used_says_so_and_long_or_odd_names_stay_in_the_panel(monkeypatch):
     monkeypatch.setattr(main, "_model_slot", {})
     assert "nothing used" in main.projects_text(FakeScanner({}), _report(()), True, 48, now=NOW).plain
     zero = LimitsReport((Window("k", "week", 0.0, RESET, 7 * 86400),), "", NOW)
-    assert "nothing used" in main.projects_text(FakeScanner({"acme/a": Counter({"x": 1.0})}), zero, True, 48, now=NOW).plain
+    assert "nothing used" in main.projects_text(FakeScanner({}), zero, True, 48, now=NOW).plain
     scan = FakeScanner({"/tmp/Mitch McConnell steps\x07 down\nfrom the Senate": Counter({"fable-5-1": 1.0}),
                         "acme/tiny": Counter({"fable-5-1": 1e-6})})
     plain = main.projects_text(scan, _report(()), True, 48, now=NOW).plain

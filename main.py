@@ -184,8 +184,12 @@ def _week_split(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool, 
     """What the week's percent is made of, as the project graph and the limit-use measure see it:
     (the current week or None, its percent, the other surfaces' (name, percent), Claude Code's
     part of the percent, each project's weight per model since the week began, their sum).
-    Without a current week it is the last 7 days, with 100 for the percent."""
+    Without a current week it is the last 7 days, with 100 for the percent. So it is while the
+    week reads 0%: the server gives whole percents, so early in a week that is use under 1%,
+    and scaling by it would show every day and project at nothing."""
     week = _current_week(rep, enabled, now)
+    if week and week.used_pct <= 0:
+        week = None
     total = week.used_pct if week else 100.0
     split = scanner.project_split((week.resets_at.timestamp() if week else now) - WEEK_S)
     surfaces = [(n, p) for n, p in rep.surfaces if n != CLAUDE_CODE_SURFACE] if week else []

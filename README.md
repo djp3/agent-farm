@@ -267,8 +267,8 @@ The first measure, estimated limit use, gives each day's tokens the weights the 
 uses and shows them as a percent of your weekly limit, so the days since the week began add
 up to Claude Code's part of the `week` bar (chats and Cowork are the rest). No raw count does
 that: cache reads are almost all the tokens but are cheap, and output is under one percent of
-the tokens but a sixth of the weight. With plan limits off it shows each day's share of the
-14 days instead.
+the tokens but a sixth of the weight. With plan limits off, or while a new week still reads
+0% (the server reports whole percents), it shows each day's share of the 14 days instead.
 
 Beneath the days a stacked bar splits output tokens by model, with a legend; each model keeps
 its color and texture while it is in the 14 days, so the stack reads without color. The "logged
@@ -331,8 +331,8 @@ The split is an estimate. Anthropic reports the week's total and its shares by s
 not by project, so agent-farm divides Claude Code's share by what each message's tokens are
 worth relative to the others, using the list rates of its model (a model released after
 your copy of agent-farm counts at the rates of the version before it). No money is shown. With
-plan limits off, or for a moment after the week resets, the rows are percents of the last 7
-days' use instead.
+plan limits off, or until a new week reaches 1% (the server reports whole percents), the rows
+are percents of the last 7 days' use instead.
 
 **Agents at work.** Pinned to the top of the panel, one wheat stalk per clock hour for
 the last 24 hours, the current hour at the right. A stalk's height is how many agents
