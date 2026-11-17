@@ -614,6 +614,56 @@ def test_the_week_bar_is_green_without_a_current_week_or_use(monkeypatch):
     assert main.week_parts(FakeScanner({}), _report(), True, now=NOW) == []
 
 
+FABLE_RESET = RESET + timedelta(days=1)                 # a model's week can reset on its own day
+FABLE_WEEK = Window("weekly_scoped:Fable", "week · fable", 20.0, FABLE_RESET, 7 * 86400)
+
+
+def test_a_models_week_is_split_between_its_versions_like_the_output_bar(monkeypatch):
+    monkeypatch.setattr(main, "_model_slot", {})
+    models = [("opus-5-5", 100), ("fable-5-1", 90), ("fable-5-2", 40), ("fable-5", 5)]   # fable-5 is Other
+    split = {"acme/a": Counter({"fable-5-1": 6.0, "opus-5-5": 9.0}),
+             "acme/b": Counter({"fable-5-2": 3.0, "fable-5": 1.0, "fabled-1": 4.0})}
+    scan = FakeScanner(split, models)
+    rep = LimitsReport((WEEK_34, FABLE_WEEK), "ultra", NOW)
+    parts = main.scoped_week_parts(scan, rep, True, now=NOW)
+    assert scan.since == FABLE_RESET.timestamp() - 7 * 86400                   # from that week's own start
+    (orange, orange_glyph), (green, green_glyph) = main.MODEL_SLOTS[1], main.MODEL_SLOTS[2]
+    assert list(parts) == ["week · fable"]                                     # the whole week is week_parts'
+    assert [p[:2] for p in parts["week · fable"]] == [(orange, orange_glyph), (green, green_glyph), main.MODEL_OTHER]
+    assert [round(p[2], 9) for p in parts["week · fable"]] == [0.6, 0.3, 0.1]  # opus and fabled-1 are not Fable
+    # drawn: both versions' hues on the Fable row, and the whole week left to week_parts
+    lines = main.limits_text(rep, True, 48, now=NOW, hues=main.model_hues(models), scoped_parts=parts)
+    row = lines.plain.index("week · fable")
+    on_row = {sp.style for sp in lines.spans if sp.start > row}
+    assert {orange, green, main.MODEL_OTHER[0]} <= on_row
+    assert main._limit_bar(20.0, 20, parts=parts["week · fable"]).plain.startswith(orange_glyph * 2 + green_glyph)
+
+
+def test_a_models_week_keeps_one_hue_with_nothing_to_split(monkeypatch):
+    monkeypatch.setattr(main, "_model_slot", {})
+    rep = LimitsReport((WEEK_34, FABLE_WEEK, Window("weekly_scoped:Claude Design", "week · claude design", 5.0,
+                                                    RESET, 7 * 86400)), "ultra", NOW)
+    fable = FakeScanner({"acme/a": Counter({"fable-5-1": 1.0})})
+    assert list(main.scoped_week_parts(fable, rep, True, now=NOW)) == ["week · fable"]   # a surface names no model
+    assert main.scoped_week_parts(fable, rep, False, now=NOW) == {}
+    assert main.scoped_week_parts(fable, rep, True, now=FABLE_RESET.timestamp() + 60) == {}
+    assert main.scoped_week_parts(FakeScanner({"acme/a": Counter({"opus-5-5": 1.0})}), rep, True, now=NOW) == {}
+    assert main.scoped_week_parts(fable, None, True, now=NOW) == {}
+
+
+def test_the_panel_draws_a_models_week_in_its_versions_colors(monkeypatch):
+    monkeypatch.setattr(main, "_model_slot", {})
+    scan = DayScanner([1.0] * 14)
+    scan.models = [("fable-5-1", 90), ("fable-5-2", 40)]
+    scan.split = {"acme/a": Counter({"fable-5-1": 10.0, "fable-5-2": 4.0})}
+    rep = LimitsReport((WEEK_34, FABLE_WEEK), "ultra", NOW, "", (("claude code", 100.0),))
+    text = main.usage_text(scan, 0, 48, rep, True, now=NOW)
+    start = text.plain.index("\nweek · fable ") + 1
+    end = text.plain.index("\n", start)
+    on_row = {sp.style for sp in text.spans if sp.start < end and sp.end > start}
+    assert {main.MODEL_SLOTS[0][0], main.MODEL_SLOTS[1][0]} <= on_row and main.BAR_HUE_TODAY not in on_row
+
+
 def test_the_panel_draws_the_week_bar_in_model_colors(monkeypatch):
     monkeypatch.setattr(main, "_model_slot", {})
     text = main.usage_text(DayScanner([1.0] * 14), 0, 48, _report(), True, now=NOW)

@@ -222,6 +222,40 @@ def week_parts(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool,
     return parts + ([(*SURFACE_BAR, other)] if other else [])
 
 
+def _of_family(model: str, name: str) -> bool:
+    """Whether a transcript's model ("fable-5-2") is a version of the model a week names ("fable")."""
+    return model == name or model.startswith(f"{name}-")
+
+
+def scoped_week_parts(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool,
+                      now: float | None = None) -> dict[str, list[tuple[str, str, float]]]:
+    """Each model's week ("week · fable") split between that model's versions, as (hue, glyph,
+    share of the fill) by bar label: by what Claude Code's messages on each version were worth
+    since that week began, in the output-by-model bar's hues and order, as the week bar is
+    split. Chats name no model, so the versions share the whole fill. A week that has reset
+    since the reading, or has no Claude Code use of its model, gets no entry and keeps the
+    one hue _calm_hue gives it."""
+    now = time.time() if now is None else now
+    out: dict[str, list[tuple[str, str, float]]] = {}
+    if not rep or not enabled:
+        return out
+    look = order = None
+    for w in rep.windows:
+        name = w.label.removeprefix("week · ")
+        if name == w.label or w.resets_at is None or w.resets_at.timestamp() <= now:
+            continue
+        by_model: Counter = Counter()
+        for weights in scanner.project_split(w.resets_at.timestamp() - (w.span_s or WEEK_S)).values():
+            by_model.update({m: n for m, n in weights.items() if n > 0 and _of_family(m, name)})
+        worth = sum(by_model.values())
+        if worth <= 0:
+            continue
+        if look is None:
+            look, order = _model_look([(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0])
+        out[w.label] = [(*look(m), n / worth) for m, n in sorted(by_model.items(), key=lambda kv: order(kv[0]))]
+    return out
+
+
 def projects_text(scanner: UsageScanner, rep: LimitsReport | None, enabled: bool, width: int,
                   now: float | None = None) -> Text:
     """How the week's percent was spent: Claude Code's part split across projects by what their
@@ -835,11 +869,13 @@ def _limit_hue(pct: float, severity: str = "", calm: str = BAR_HUE_TODAY) -> str
 
 def _calm_hue(label: str, hues: dict[str, str]) -> str:
     """A model's week wears the hue that model has in the output-by-model bar: "week · fable"
-    takes the biggest of the Fable versions there. Anything else stays green."""
+    takes the biggest of the Fable versions there. Anything else stays green. A model's week
+    with use to split between its versions is drawn split (scoped_week_parts); this is its
+    hue without that."""
     name = label.removeprefix("week · ")
     if name == label:
         return BAR_HUE_TODAY
-    return next((hue for m, hue in hues.items() if m == name or m.startswith(f"{name}-")), BAR_HUE_TODAY)
+    return next((hue for m, hue in hues.items() if _of_family(m, name)), BAR_HUE_TODAY)
 
 
 def _limit_bar(pct: float, width: int, elapsed: float | None = None, severity: str = "",
@@ -908,9 +944,11 @@ def fmt_countdown(at: datetime | None, now: float) -> str:
 
 def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float | None = None,
                 polling: bool = True, hues: dict[str, str] | None = None,
-                week_parts: list[tuple[str, str, float]] | None = None) -> Text:
+                week_parts: list[tuple[str, str, float]] | None = None,
+                scoped_parts: dict[str, list[tuple[str, str, float]]] | None = None) -> Text:
     """The plan-limit block of the usage panel: what /usage shows in Claude Code, one bar per
-    window. Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
+    window. `week_parts` split the week and spend bars by model, `scoped_parts` each model's
+    week by version (by label). Off: a one-line pointer to Settings. Failed: the last bars plus the reason.
     Not polling (nothing has worked since the last fetch): the age keeps growing, so the
     header says it is paused."""
     t = Text()
@@ -939,8 +977,9 @@ def limits_text(rep: LimitsReport | None, enabled: bool, width: int, now: float 
     for w in rep.windows:
         t.append(f"{w.label:<{label_w}} ", style="dim")
         # Nothing says which models the extra spend went to, so the week's mix is its estimate too.
+        parts = week_parts if w.label in ("week", EXTRA_LABEL) else (scoped_parts or {}).get(w.label)
         t.append_text(_limit_bar(w.used_pct, bar_w, w.elapsed(now), w.severity, _calm_hue(w.label, hues or {}),
-                                 week_parts if w.label in ("week", EXTRA_LABEL) else None, w.credits_out))
+                                 parts, w.credits_out))
         calm = _limit_hue(w.used_pct, w.severity) == BAR_HUE_TODAY
         shown = w.used_pct if w.funded_pct is None else w.funded_pct
         t.append(f" {int(shown):>3}%", style="" if calm else "bold")
@@ -1360,7 +1399,8 @@ def usage_text(scanner: UsageScanner, metric_idx: int, width: int,
     t.append(f"{today.messages} msgs · {today.session_count} sessions\n\n")
     split = [(m, n) for m, n in scanner.model_split(USAGE_DAYS) if n > 0]
     t.append_text(limits_text(limits, limits_on, width, now, polling=polling, hues=model_hues(split),
-                              week_parts=week_parts(scanner, limits, limits_on, now)))
+                              week_parts=week_parts(scanner, limits, limits_on, now),
+                              scoped_parts=scoped_week_parts(scanner, limits, limits_on, now)))
     t.append("\n")
 
     vals = [getattr(d, key) for d in days]

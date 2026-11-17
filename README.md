@@ -296,8 +296,9 @@ reading, it says `reset` until the next fetch.
   the week's mix is an estimate.
 - **Models.** The `week` bar is split by model in the colors and textures of the
   output-by-model bar below, estimated the way the project graph is, with chats and Cowork in
-  gray at its end. A model's week, such as Fable's, is drawn in that model's color. Either
-  turns orange or red as a whole when it needs attention.
+  gray at its end. A model's week, such as Fable's, is split the same way between that
+  model's versions (Fable 5.1, Fable 5.2), by Claude Code's use of each since that week began.
+  Either turns orange or red as a whole when it needs attention.
 - **Surfaces.** The last line says where the week's use went by surface (`used in claude code
   90% · chats 6% · cowork 4%`); those are shares of what you used, not of a limit.
 
