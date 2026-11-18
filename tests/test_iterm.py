@@ -348,6 +348,31 @@ def test_a_close_that_never_finishes_still_cuts_the_socket(monkeypatch):
     assert connection.websocket.close_calls == 1 and connection.released
 
 
+def test_a_release_cancelled_while_the_reader_stops_still_cuts_the_socket():
+    async def slow_reader():
+        while True:                                                    # shrugs off the first cancel
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(10)
+
+    async def scenario():
+        connection = ReleasableConnection()
+        connection._Connection__dispatch_forever_future.cancel()
+        reader = connection._Connection__dispatch_forever_future = asyncio.ensure_future(slow_reader())
+        await asyncio.sleep(0)
+        release = asyncio.ensure_future(ITerm2Map()._release(connection))
+        await asyncio.sleep(0.05)                                      # waiting on the reader now
+        release.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await release
+        reader.cancel()
+        return connection
+    connection = asyncio.run(scenario())
+    assert connection.websocket.close_calls == 0                       # no time for a goodbye...
+    assert connection.websocket.transport.aborted                      # ...but the socket is cut
+
+
 def test_failures_back_off_instead_of_reconnecting_every_second(monkeypatch):
     waits, made, open_at_connect = _drive(monkeypatch, ITerm2Map(), _closed_at_once, 10)
     assert waits == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
