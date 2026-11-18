@@ -39,6 +39,8 @@ except ImportError:  # pragma: no cover
 try:
     import iterm2
     from iterm2 import auth as iterm2_auth
+    from iterm2 import notifications as iterm2_notifications
+    from iterm2.app import invalidate_app as iterm2_forget_app
     from iterm2.notifications import (async_subscribe_to_layout_change_notification,
                                       async_subscribe_to_new_session_notification,
                                       async_subscribe_to_terminate_session_notification)
@@ -659,6 +661,12 @@ ITERM_RECHECK_S = 60.0          # a full re-read even without an announcement, i
 ITERM_RETRY_S = 15.0            # while iTerm2 is not running, or turned the connection down
 ITERM_SETTLE_S = 0.2            # a new tab is a burst of announcements; read once after it
 ITERM_CONNECT_S = 10.0
+ITERM_CLOSE_S = 2.0             # a closing handshake gets this long before the socket is cut
+# The wait before connecting again after a connection ends: the first, doubling with each one
+# in a row that didn't settle, up to the longest. One settles by reading the map and lasting
+# ITERM_STEADY_S, so a connection iTerm2 drops at once can't become a tight reconnect loop.
+ITERM_BACKOFF_S = (1.0, 60.0)
+ITERM_STEADY_S = 60.0
 ITERM_FOCUS_S = 3.0
 
 
@@ -692,9 +700,12 @@ class ITerm2Map:
         self.beat_at = 0.0                      # time.monotonic()
         self.connected_at = 0.0                 # time.time()
         self._failures = 0                      # consecutive failed connections
+        self._unsettled = 0                     # consecutive connections that ended before settling
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._app = None
+        self._tokens: list = []                 # this connection's subscriptions
+        self._releasing: set = set()            # releases of connections that came too late
 
     def start_background(self) -> None:
         """Keep the map on a thread of its own: the connection lives in an event loop there,
@@ -713,22 +724,101 @@ class ITerm2Map:
             if not iterm_running():
                 self.by_tty = {}                # no iTerm2, no sessions in it
                 self.state = "not running"
-                await asyncio.sleep(ITERM_RETRY_S)
+                await self._sleep(ITERM_RETRY_S)
                 continue
             try:
                 connection = await self._connect()
             except Exception as e:
                 self._failed(e)
-                await asyncio.sleep(ITERM_RETRY_S)
+                await self._sleep(ITERM_RETRY_S)
                 continue
             self._failures = 0
+            began, lost = time.monotonic(), None
             try:
                 await self._follow(connection)
             except Exception as e:
-                log.info("iTerm2: lost the connection: %r", e)
+                lost = e
             finally:
-                self.connected, self._app, self.state = False, None, "starting"
-            await asyncio.sleep(1.0)
+                self.connected, self.state = False, "starting"
+                app, self._app = self._app, None
+                self._forget(app)
+                await self._release(connection)
+            wait = self._next_wait(began)
+            if lost is not None:
+                self._lost(lost, wait)
+            await self._sleep(wait)
+
+    @staticmethod
+    async def _sleep(seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    def _next_wait(self, began: float) -> float:
+        """The wait before connecting again after a connection made at `began` ended
+        (ITERM_BACKOFF_S). Every connection that ends counts against the wait unless it settled."""
+        if self.beat_at > began and time.monotonic() - began >= ITERM_STEADY_S:
+            self._unsettled = 0
+        first, longest = ITERM_BACKOFF_S
+        wait = min(longest, first * 2 ** self._unsettled)
+        self._unsettled = min(self._unsettled + 1, 32)
+        return wait
+
+    def _lost(self, e: BaseException, wait: float) -> None:
+        # Where it was raised, now and then: on 2026-11-18 every reconnect after an iTerm2 crash
+        # failed at once, and only a traceback showed why (the library's old App, see _app_for).
+        if _debounce.ok("iterm2-lost"):
+            log.info("iTerm2: lost the connection; trying again in %.0fs", wait, exc_info=e)
+        else:
+            log.info("iTerm2: lost the connection: %r; trying again in %.0fs", e, wait)
+
+    async def _release(self, connection) -> None:
+        """Let go of a connection whatever state it is in. Each one left open holds a socket here
+        and a thread in iTerm2 for good: on 2026-11-18, 509 of them used up iTerm2's threads and
+        hung it. The library's reader is stopped, iTerm2 gets ITERM_CLOSE_S to take the closing
+        handshake, and then the socket is cut regardless, since a protocol that counts itself
+        closed, or an iTerm2 that never answers, would leave it open."""
+        dispatch = getattr(connection, "_Connection__dispatch_forever_future", None)
+        if dispatch is not None:
+            dispatch.cancel()
+            await asyncio.wait({dispatch}, timeout=ITERM_CLOSE_S)
+            if dispatch.done() and not dispatch.cancelled():
+                dispatch.exception()            # seen here, so asyncio doesn't report it as lost
+        websocket = getattr(connection, "websocket", None)
+        if websocket is None:
+            return
+        try:
+            await asyncio.wait_for(websocket.close(), ITERM_CLOSE_S)
+        except Exception as e:
+            log.debug("iTerm2: closing a connection: %r", e)
+        finally:
+            transport = getattr(websocket, "transport", None)
+            if transport is not None:
+                transport.abort()               # nothing to do once the socket is closed
+
+    def _forget(self, app) -> None:
+        """Take a connection's subscriptions and the library's App made over it out of the
+        library's tables, which last as long as the process does: otherwise every connection
+        adds callbacks there, and the old App keeps answering announcements. iTerm2 drops its
+        side of them with the connection."""
+        tokens, self._tokens = self._tokens + list(getattr(app, "tokens", None) or ()), []
+        for token in tokens:
+            if not (isinstance(token, tuple) and len(token) == 2):
+                continue
+            key, callback = token
+            handlers = iterm2_notifications._handlers.get(key)
+            if handlers and callback in handlers:
+                handlers.remove(callback)
+                if not handlers:
+                    del iterm2_notifications._handlers[key]
+        iterm2_forget_app()
+
+    @staticmethod
+    async def _app_for(connection):
+        """The library's App, made over this connection. The library keeps one App for the
+        whole process and refreshes it over the connection it was made with, and forgets it only
+        in Connection.run(), which agent-farm doesn't use. So after iTerm2 restarted, every new
+        connection refreshed the old App over the dead one and failed at once."""
+        iterm2_forget_app()
+        return await iterm2.async_get_app(connection)
 
     def _failed(self, e: BaseException) -> None:
         # One refusal is often iTerm2 starting up; a run of them is worth a warning.
@@ -750,12 +840,38 @@ class ITerm2Map:
             cookie, key = pair.split(" ")
             os.environ["ITERM2_COOKIE"], os.environ["ITERM2_KEY"] = cookie, key
         try:
-            return await asyncio.wait_for(iterm2.Connection.async_create(), ITERM_CONNECT_S)
-        except SystemExit:                      # the library exits when iTerm2 finds it too old
-            raise RuntimeError("iTerm2 turned down this version of its Python API library") from None
+            return await self._create()
         finally:
             os.environ.pop("ITERM2_COOKIE", None)
             os.environ.pop("ITERM2_KEY", None)
+
+    async def _create(self):
+        """A new connection, given ITERM_CONNECT_S. One that arrives after that, or after the
+        wait was cancelled, is released instead of being left open."""
+        async def create():
+            try:
+                return await iterm2.Connection.async_create()
+            except SystemExit:                  # the library exits when iTerm2 finds it too old
+                raise RuntimeError("iTerm2 turned down this version of its Python API library") from None
+        task = asyncio.ensure_future(create())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=ITERM_CONNECT_S)
+        except BaseException:
+            self._release_when_made(task)
+            raise
+        if task in done:
+            return task.result()
+        self._release_when_made(task)
+        raise TimeoutError(f"iTerm2 did not answer within {ITERM_CONNECT_S:.0f}s")
+
+    def _release_when_made(self, task) -> None:
+        def made(t) -> None:
+            if not t.cancelled() and t.exception() is None:
+                release = asyncio.ensure_future(self._release(t.result()))
+                self._releasing.add(release)
+                release.add_done_callback(self._releasing.discard)
+        task.add_done_callback(made)
+        task.cancel()
 
     async def _follow(self, connection) -> None:
         """Re-read the map whenever iTerm2 announces a change, and every ITERM_RECHECK_S, until
@@ -767,8 +883,8 @@ class ITerm2Map:
         for subscribe in (async_subscribe_to_layout_change_notification,
                           async_subscribe_to_new_session_notification,
                           async_subscribe_to_terminate_session_notification):
-            await subscribe(connection, on_change)
-        self._app = await iterm2.async_get_app(connection)
+            self._tokens.append(await subscribe(connection, on_change))
+        self._app = await self._app_for(connection)
         self.connected, self.state, self.connected_at = True, "connected", time.time()
         log.info("iTerm2: connected, following its tabs")
         closed = asyncio.ensure_future(connection.websocket.wait_closed())
@@ -807,11 +923,13 @@ class ITerm2Map:
             return
 
         async def once() -> None:
-            connection = await self._connect()
+            connection, app = await self._connect(), None
             try:
-                await self._read(await iterm2.async_get_app(connection))
+                app = await self._app_for(connection)
+                await self._read(app)
             finally:
-                await connection.websocket.close()
+                self._forget(app)
+                await self._release(connection)
         try:
             asyncio.run(once())
         except Exception as e:
