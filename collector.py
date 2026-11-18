@@ -775,18 +775,18 @@ class ITerm2Map:
         and a thread in iTerm2 for good: on 2026-11-18, 509 of them used up iTerm2's threads and
         hung it. The library's reader is stopped, iTerm2 gets ITERM_CLOSE_S to take the closing
         handshake, and then the socket is cut regardless, since a protocol that counts itself
-        closed, or an iTerm2 that never answers, would leave it open."""
-        dispatch = getattr(connection, "_Connection__dispatch_forever_future", None)
-        if dispatch is not None:
-            dispatch.cancel()
-            await asyncio.wait({dispatch}, timeout=ITERM_CLOSE_S)
-            if dispatch.done() and not dispatch.cancelled():
-                dispatch.exception()            # seen here, so asyncio doesn't report it as lost
+        closed, or an iTerm2 that never answers, would leave it open. The cut happens on every
+        way out, a cancelled release included."""
         websocket = getattr(connection, "websocket", None)
-        if websocket is None:
-            return
         try:
-            await asyncio.wait_for(websocket.close(), ITERM_CLOSE_S)
+            dispatch = getattr(connection, "_Connection__dispatch_forever_future", None)
+            if dispatch is not None:
+                dispatch.cancel()
+                await asyncio.wait({dispatch}, timeout=ITERM_CLOSE_S)
+                if dispatch.done() and not dispatch.cancelled():
+                    dispatch.exception()        # seen here, so asyncio doesn't report it as lost
+            if websocket is not None:
+                await asyncio.wait_for(websocket.close(), ITERM_CLOSE_S)
         except Exception as e:
             log.debug("iTerm2: closing a connection: %r", e)
         finally:
