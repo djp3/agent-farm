@@ -260,3 +260,274 @@ def test_the_heart_beats_and_says_what_it_shows():
     assert "not running" in main.iterm_heart_words("not running", 0, 0, 1.0)
     tip = main.fleet_tooltip([], main.get_ordering(main.DEFAULT_ORDERING), 0, True, "♡ connecting to iTerm2…")
     assert "♡ connecting to iTerm2…" in tip
+
+
+# ---- releasing connections (2026-11-18: 509 leaked connections hung iTerm2) ----------------- #
+class FakeTransport:
+    def __init__(self):
+        self.aborted = False
+
+    def abort(self):
+        self.aborted = True
+
+
+class ClosingWebsocket(FakeWebsocket):
+    def __init__(self, close_hangs=False):
+        super().__init__()
+        self.close_hangs, self.close_calls, self.transport = close_hangs, 0, FakeTransport()
+
+    async def close(self):
+        self.close_calls += 1
+        if self.close_hangs:                                           # a stuck iTerm2 never answers
+            await asyncio.Event().wait()
+        self.closed.set()
+
+
+class ReleasableConnection:
+    """Shaped like iterm2.Connection: a websocket, and the library's reader as a task."""
+    def __init__(self, close_hangs=False):
+        self.websocket = ClosingWebsocket(close_hangs)
+        self._Connection__dispatch_forever_future = asyncio.ensure_future(asyncio.Event().wait())
+
+    @property
+    def released(self):
+        return self.websocket.transport.aborted and self._Connection__dispatch_forever_future.done()
+
+
+class Stop(Exception):
+    pass
+
+
+def _drive(monkeypatch, m, follow, cycles):
+    """Run _follow_forever with iTerm2 running for `cycles` connections, each followed by
+    `follow`. Returns the waits between them, the connections, and how many were open at once
+    when each was made."""
+    waits, made, open_at_connect = [], [], []
+    monkeypatch.setattr(collector, "iterm_running", lambda: True)
+
+    async def connect():
+        open_at_connect.append(sum(not c.released for c in made))
+        made.append(ReleasableConnection())
+        return made[-1]
+    monkeypatch.setattr(m, "_connect", connect)
+    monkeypatch.setattr(m, "_follow", follow)
+
+    async def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) >= cycles:
+            raise Stop
+    monkeypatch.setattr(m, "_sleep", sleep)
+    with pytest.raises(Stop):
+        asyncio.run(m._follow_forever())
+    return waits, made, open_at_connect
+
+
+async def _closed_at_once(_connection):
+    from websockets.exceptions import ConnectionClosedError
+    raise ConnectionClosedError(None, None)                           # what every reconnect hit
+
+
+def test_a_connection_that_fails_is_closed_and_cut(monkeypatch):
+    m = ITerm2Map()
+    _, made, _ = _drive(monkeypatch, m, _closed_at_once, 1)
+    (connection,) = made
+    assert connection.websocket.close_calls == 1                       # a closing handshake first
+    assert connection.websocket.transport.aborted                      # then the socket, regardless
+    assert connection._Connection__dispatch_forever_future.cancelled()  # and the library's reader
+    assert not m.connected and m.state == "starting" and m._app is None
+
+
+def test_a_close_that_never_finishes_still_cuts_the_socket(monkeypatch):
+    monkeypatch.setattr(collector, "ITERM_CLOSE_S", 0.05)
+
+    async def scenario():
+        connection = ReleasableConnection(close_hangs=True)
+        await asyncio.wait_for(ITerm2Map()._release(connection), 1)
+        return connection
+    connection = asyncio.run(scenario())
+    assert connection.websocket.close_calls == 1 and connection.released
+
+
+def test_a_release_cancelled_while_the_reader_stops_still_cuts_the_socket():
+    async def slow_reader():
+        while True:                                                    # shrugs off the first cancel
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(10)
+
+    async def scenario():
+        connection = ReleasableConnection()
+        connection._Connection__dispatch_forever_future.cancel()
+        reader = connection._Connection__dispatch_forever_future = asyncio.ensure_future(slow_reader())
+        await asyncio.sleep(0)
+        release = asyncio.ensure_future(ITerm2Map()._release(connection))
+        await asyncio.sleep(0.05)                                      # waiting on the reader now
+        release.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await release
+        reader.cancel()
+        return connection
+    connection = asyncio.run(scenario())
+    assert connection.websocket.close_calls == 0                       # no time for a goodbye...
+    assert connection.websocket.transport.aborted                      # ...but the socket is cut
+
+
+def test_failures_back_off_instead_of_reconnecting_every_second(monkeypatch):
+    waits, made, open_at_connect = _drive(monkeypatch, ITerm2Map(), _closed_at_once, 10)
+    assert waits == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
+    assert all(c.released for c in made)
+    assert max(open_at_connect) == 0                                   # never more than the one in use
+
+
+def test_only_a_connection_that_settled_resets_the_wait(monkeypatch):
+    app = FakeApp(FakeWindow(FakeTab(FakeSession("A", "/dev/ttys001"))))
+    m = ITerm2Map()
+    plan = iter(["drop", "drop", "read", "drop", "read+steady", "drop"])
+
+    async def follow(_connection):
+        step = next(plan)
+        if step.startswith("read"):
+            await m._read(app)                                         # got as far as reading the map
+        if step == "read+steady":
+            monkeypatch.setattr(collector, "ITERM_STEADY_S", 0.0)      # ...and lasted long enough
+        await _closed_at_once(_connection)
+    waits, _, _ = _drive(monkeypatch, m, follow, 6)
+    # a read alone doesn't settle it (iTerm2 can drop a connection right after); a read that lasted does
+    assert waits == [1.0, 2.0, 4.0, 8.0, 1.0, 2.0]
+
+
+def test_a_connection_made_after_the_timeout_is_released(monkeypatch):
+    monkeypatch.setattr(collector.iterm2_auth, "applescript_auth_disabled", lambda: True)
+    monkeypatch.setattr(collector, "ITERM_CONNECT_S", 0.05)
+    made = []
+
+    async def late():
+        made.append(ReleasableConnection())
+        try:
+            await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            pass                                                       # the handshake finished anyway
+        return made[0]
+    monkeypatch.setattr(collector.iterm2.Connection, "async_create", staticmethod(late))
+
+    async def scenario():
+        with pytest.raises(TimeoutError):
+            await ITerm2Map()._connect()
+        await asyncio.sleep(0.1)
+    asyncio.run(scenario())
+    assert made[0].released
+
+
+def test_a_new_connection_gets_a_new_app_not_the_old_one_over_a_dead_connection(monkeypatch):
+    """The root cause of the instant failures: iterm2.async_get_app keeps one App for the process
+    and refreshes it over the connection it was made with, which died with the old iTerm2."""
+    from websockets.exceptions import ConnectionClosedError
+
+    class OldApp:
+        async def async_refresh(self):
+            raise ConnectionClosedError(None, None)
+    monkeypatch.setattr(collector.iterm2.App, "instance", OldApp())
+    fresh = FakeApp()
+
+    async def construct(connection):
+        return fresh
+    monkeypatch.setattr(collector.iterm2.App, "async_construct", staticmethod(construct))
+    assert asyncio.run(ITerm2Map._app_for("new connection")) is fresh
+
+
+def test_releasing_forgets_the_subscriptions_and_the_app(monkeypatch):
+    handlers = collector.iterm2_notifications._handlers
+    mine, theirs, apps = object(), object(), object()
+    monkeypatch.setitem(handlers, ("s1", 1), [mine, theirs])
+    monkeypatch.setitem(handlers, ("s2", 2), [apps])
+
+    class App:
+        tokens = [(("s2", 2), apps)]
+    monkeypatch.setattr(collector.iterm2.App, "instance", App)
+    m = ITerm2Map()
+    m._tokens = [(("s1", 1), mine), None]                              # a fake subscription returns None
+    m._forget(App())
+    assert handlers[("s1", 1)] == [theirs] and ("s2", 2) not in handlers
+    assert collector.iterm2.App.instance is None and m._tokens == []
+
+
+def test_the_one_shot_read_releases_its_connection(monkeypatch):
+    app = FakeApp(FakeWindow(FakeTab(FakeSession("A", "/dev/ttys001"))))
+    made = []
+    monkeypatch.setattr(collector, "iterm_running", lambda: True)
+
+    async def connect():
+        made.append(ReleasableConnection())
+        return made[-1]
+
+    async def get_app(_connection):
+        return app
+    m = ITerm2Map()
+    monkeypatch.setattr(m, "_connect", connect)
+    monkeypatch.setattr(collector.iterm2, "async_get_app", get_app)
+    m.refresh_once()
+    assert set(m.by_tty) == {"/dev/ttys001"} and made[0].released
+
+
+def test_many_instant_failures_leave_at_most_one_connection_open_to_iterm2(monkeypatch):
+    """The 2026-11-18 hang against a real websocket server on a unix socket, where the library
+    looks for iTerm2's, and the library's own connection code: every connection fails at once,
+    as each one did after iTerm2 crashed, and none of them may stay open."""
+    import shutil
+    import tempfile
+    from websockets.asyncio.server import unix_serve
+
+    home = tempfile.mkdtemp(prefix="af-", dir="/tmp")                  # a unix socket path must be short
+    try:
+        folder = os.path.join(home, "Library", "Application Support", "iTerm2", "private")
+        os.makedirs(folder)
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.delenv("IT2_SUITE", raising=False)
+        monkeypatch.setenv("ITERM2_COOKIE", "test")
+        monkeypatch.setenv("ITERM2_KEY", "test")
+        monkeypatch.setattr(collector.iterm2_auth, "applescript_auth_disabled", lambda: True)   # no AppleScript
+
+        def no_tcp(self):
+            raise AssertionError("never the real iTerm2's port")
+        monkeypatch.setattr(collector.iterm2.Connection, "_get_tcp_connect_coro", no_tcp)
+        monkeypatch.setattr(collector, "iterm_running", lambda: True)
+        _follow_with(monkeypatch, None)
+        monkeypatch.setattr(collector.iterm2, "async_get_app", _closed_at_once)
+        m, cycles, now_open, most = ITerm2Map(), [], [0], [0]
+
+        async def sleep(_seconds):
+            cycles.append(_seconds)
+            if len(cycles) >= 25:
+                raise Stop
+            await asyncio.sleep(0.02)                                  # time for the server to see a close
+        monkeypatch.setattr(m, "_sleep", sleep)
+
+        async def handler(ws):
+            now_open[0] += 1
+            most[0] = max(most[0], now_open[0])
+            try:
+                await ws.wait_closed()
+            finally:
+                now_open[0] -= 1
+
+        async def scenario():
+            async with unix_serve(handler, os.path.join(folder, "socket"), subprotocols=["api.iterm2.com"]):
+                with pytest.raises(Stop):
+                    await m._follow_forever()
+                await asyncio.sleep(0.1)
+                assert now_open[0] == 0
+        asyncio.run(scenario())
+        assert len(cycles) == 25 and most[0] == 1
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_a_lost_connection_is_logged_with_where_it_was_raised_now_and_then(monkeypatch, caplog):
+    monkeypatch.setattr(collector, "_debounce", collector._Debounce())
+    with caplog.at_level("INFO", logger=collector.log.name):
+        _drive(monkeypatch, ITerm2Map(), _closed_at_once, 3)
+    lost = [r for r in caplog.records if "lost the connection" in r.getMessage()]
+    assert len(lost) == 3 and lost[0].exc_info and not lost[1].exc_info and not lost[2].exc_info
+    assert "_closed_at_once" in caplog.text                            # the traceback, once
+    assert "trying again in 2s" in lost[1].getMessage()
