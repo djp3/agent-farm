@@ -33,6 +33,7 @@ SAMPLE_COUNT = 4        # samples shown for a pattern
 SAMPLE_MAX = 40         # characters in one sample; a longer draw is dropped
 REPEAT_EXTRA = 3        # a repeat draws at most this many past its minimum
 TIME_LIMIT_S = 0.25     # for one pattern's examples, and for checking one name against it
+DRAW_STEPS = 5000       # pieces of a pattern the drawer may visit, across all of its draws
 
 log = logging.getLogger("agent_farm.grange")
 
@@ -132,6 +133,23 @@ class _GiveUp(Exception):
     """This draw can't make a usable sample."""
 
 
+class _OutOfSteps(Exception):
+    """The pattern's draws used up DRAW_STEPS: stop drawing, keep what was found."""
+
+
+class _Steps:
+    """The step budget shared by all of one pattern's draws. Output length alone doesn't
+    bound the work: (?:(?:^){40}){40}... visits billions of anchors without a character."""
+
+    def __init__(self, n: int) -> None:
+        self.left = n
+
+    def take(self) -> None:
+        self.left -= 1
+        if self.left < 0:
+            raise _OutOfSteps
+
+
 def samples(pattern: str, count: int = SAMPLE_COUNT) -> list[str] | None:
     """A few different strings the pattern matches, drawn from the pattern itself: readable
     letters and digits where it allows a choice, and short repeats. The same pattern always
@@ -163,14 +181,14 @@ def _draw_samples(pattern: str, rx: re.Pattern, count: int) -> list[str]:
         tree = sre_parse.parse(pattern)
     except Exception:
         return []
-    rng = random.Random(pattern)
+    rng, steps = random.Random(pattern), _Steps(DRAW_STEPS)
     out: list[str] = []
     for _ in range(count * 10):
         try:
-            s = _draw(tree, rng, {})
+            s = _draw(tree, rng, {}, steps)
         except (_GiveUp, RecursionError):
             continue
-        except Exception:               # a parse tree this code doesn't know
+        except Exception:               # out of steps, or a parse tree this code doesn't know
             break
         if s not in out and rx.search(s):
             out.append(s)
@@ -179,16 +197,18 @@ def _draw_samples(pattern: str, rx: re.Pattern, count: int) -> list[str]:
     return out
 
 
-def _draw(items, rng: random.Random, groups: dict) -> str:
+def _draw(items, rng: random.Random, groups: dict, steps: _Steps) -> str:
+    steps.take()
     out = ""
     for op, av in items:
-        out += _one(op, av, rng, groups)
+        out += _one(op, av, rng, groups, steps)
         if len(out) > SAMPLE_MAX:
             raise _GiveUp
     return out
 
 
-def _one(op, av, rng: random.Random, groups: dict) -> str:
+def _one(op, av, rng: random.Random, groups: dict, steps: _Steps) -> str:
+    steps.take()
     if op == sre.LITERAL:
         return chr(av)
     if op == sre.NOT_LITERAL:
@@ -198,10 +218,10 @@ def _one(op, av, rng: random.Random, groups: dict) -> str:
     if op == sre.IN:
         return _from_class(av, rng)
     if op == sre.BRANCH:
-        return _draw(rng.choice(av[1]), rng, groups)
+        return _draw(rng.choice(av[1]), rng, groups, steps)
     if op == sre.SUBPATTERN:
         group, _add, _del, sub = av
-        s = _draw(sub, rng, groups)
+        s = _draw(sub, rng, groups, steps)
         if group is not None:
             groups[group] = s
         return s
@@ -209,14 +229,14 @@ def _one(op, av, rng: random.Random, groups: dict) -> str:
         lo, hi, sub = av
         if lo > SAMPLE_MAX:
             raise _GiveUp
-        return "".join(_draw(sub, rng, groups) for _ in range(rng.randint(lo, min(hi, lo + REPEAT_EXTRA))))
+        return "".join(_draw(sub, rng, groups, steps) for _ in range(rng.randint(lo, min(hi, lo + REPEAT_EXTRA))))
     if op == getattr(sre, "ATOMIC_GROUP", None):
-        return _draw(av, rng, groups)
+        return _draw(av, rng, groups, steps)
     if op == sre.GROUPREF:
         return groups.get(av, "")       # an unset group fails the match; the check drops it
     if op == sre.GROUPREF_EXISTS:
         group, yes, no = av
-        return _draw(yes if group in groups else (no or []), rng, groups)
+        return _draw(yes if group in groups else (no or []), rng, groups, steps)
     if op in _EMPTY:
         return ""                       # a draw that breaks an anchor or lookaround is dropped
     raise _GiveUp                       # FAILURE, or something newer

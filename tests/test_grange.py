@@ -96,6 +96,15 @@ def test_a_pattern_that_backtracks_badly_gets_a_note_instead_of_freezing_the_pan
     assert "took too long to try" in main.grange_samples_text(SLOW).plain
 
 
+def test_a_pattern_that_asks_for_endless_drawing_stops_on_its_step_budget():
+    nested = "(?:(?:(?:(?:(?:(?:^){40}){40}){40}){40}){40}){40}"     # 40**6 anchors, no characters
+    began = time.monotonic()
+    assert grange.samples(nested) == []                  # stopped by the budget, not the timer:
+    assert time.monotonic() - began < grange.TIME_LIMIT_S / 2
+    assert "no short example" in main.grange_samples_text(nested).plain    # not "backtracks badly"
+    assert grange.samples(r"(?i)fix|rev(iew)?") == ["rev", "review", "fix"]   # busy normal ones unaffected
+
+
 def test_a_name_too_slow_to_check_is_not_reported_and_the_pattern_is_logged_once(caplog, monkeypatch):
     monkeypatch.setattr(grange, "_slow_warned", set())
     rules = [{"pattern": r"(a+)+b", "enabled": True}]
