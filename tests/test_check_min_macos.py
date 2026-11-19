@@ -69,10 +69,25 @@ def test_versions_compare_as_numbers():
     assert v("10.13") < v("11.0") < v("26.4") < v("27.0") < v("27.0.1")
 
 
+def swift_platform(package_swift: str) -> str | None:
+    """The macOS version in Package.swift's platforms, in either form: .macOS("27.0") or .macOS(.v27)."""
+    m = re.search(r'\.macOS\(\s*(?:"([\d.]+)"|\.v(\d+(?:_\d+)*))\s*\)', package_swift)
+    return None if m is None else (m.group(1) or m.group(2).replace("_", "."))
+
+
+def test_both_forms_of_the_swift_platform_are_read():
+    assert swift_platform('platforms: [.macOS("27.0")],') == "27.0"
+    assert swift_platform("platforms: [.macOS(.v28)],") == "28"
+    assert swift_platform("platforms: [.macOS(.v10_15)],") == "10.15"
+    assert swift_platform("platforms: [.iOS(.v17)],") is None
+
+
 def test_the_declared_minimum_matches_the_swift_package():
     declared = plistlib.loads((ROOT / "macos" / "Info.plist").read_bytes())["LSMinimumSystemVersion"]
-    swift = re.search(r'\.macOS\("([\d.]+)"\)', (ROOT / "macos" / "Package.swift").read_text()).group(1)
-    assert declared == swift == "27.0"
+    swift = swift_platform((ROOT / "macos" / "Package.swift").read_text())
+    assert swift is not None, "no .macOS(...) platform found in macos/Package.swift"
+    v = check_min_macos.version
+    assert v(declared) == v(swift), f"Info.plist declares {declared}, Package.swift {swift}"
 
 
 def _fake_bundle(tmp_path, declared, otool_by_name, monkeypatch, executable=None):
