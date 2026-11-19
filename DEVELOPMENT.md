@@ -94,6 +94,12 @@ if it exits with an error, and provides the menus. `swift run` from `macos/` wor
 `AGENT_FARM_CORE=/path/to/executable` to choose what it runs, and Sparkle stays off because
 there is no `Info.plist`.
 
+An app built for macOS 27 gets its window title at the left of the title bar, and AppKit has
+no setting for that. `CenteredTitle.swift` hides the system's title and draws it in the
+middle with a label of its own. The window keeps its real title, which the Dock, Mission
+Control, the Window menu and VoiceOver use, and the label follows every change to it. The
+same class is in agent-frolic.
+
 Builds are Apple-silicon only, like the machine they are built on.
 
 **The minimum macOS is 27**, declared in `macos/Info.plist` (`LSMinimumSystemVersion`, which
