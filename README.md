@@ -244,6 +244,13 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
   Code sign-in. See the usage panel section for what that involves.
 - **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
 - **Ordering**: attention, activity, started or name.
+- **Report to agent-grange**: which sessions to share with your team through agent-grange,
+  as a list of regular expressions (Python's syntax), each with its own on/off button. A
+  session is reported when its name matches a pattern that is on, anywhere in the name
+  unless the pattern is anchored with `^` or `$`; with no patterns, nothing is reported.
+  Under each pattern, and under the one you are typing, are a few names it matches, drawn
+  from the pattern itself, so `proj-\d+-pr-\d+` shows names like `proj-5-pr-13`. Nothing
+  is sent to agent-grange yet; this only keeps the list.
 
 **Monitor ▸ Reveal Settings File** shows the JSON file behind the panel; the name column
 width lives only there, and so does the usage panel's width, which dragging the divider sets.

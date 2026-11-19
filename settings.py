@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+import grange
 from apppaths import data_dir
 
 log = logging.getLogger("agent_farm.settings")
@@ -32,6 +33,9 @@ class Settings:
     show_expiring: bool = True          # the expiring pane: sessions Claude Code deletes next, with keep
     name_column_width: int = 26         # width of that name column (edit here; not in the panel)
     usage_width: int = 49               # the usage column's width; drag the line beside it
+    # Sessions reported to agent-grange: those whose name a pattern that is on matches.
+    # Each entry is {"pattern": a Python regular expression, "enabled": bool}; see grange.py.
+    grange_patterns: list = field(default_factory=list)
 
     @classmethod
     def path(cls) -> Path:
@@ -65,6 +69,7 @@ class Settings:
         for f in fields(cls):
             if f.name in data and isinstance(data[f.name], type(getattr(s, f.name))):
                 setattr(s, f.name, data[f.name])
+        s.grange_patterns = grange.clean(s.grange_patterns)
         return s
 
     def save(self) -> None:
