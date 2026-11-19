@@ -3,7 +3,9 @@
 #   1. PyInstaller onedir of main.py            -> dist/python/agent-farm-core
 #   2. SwiftPM release build of the host app     -> macos/.build/release/AgentFarm
 #   3. assemble the bundle (binary, Sparkle.framework, the Python tree, icon, Info.plist)
-#   4. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
+#   4. check the minimum macOS (scripts/check_min_macos.py): stop if a binary needs more
+#      than Info.plist declares, or the Swift executable records a different minimum
+#   5. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
 # Needs: .venv with requirements.txt + requirements-build.txt, Xcode command line tools.
 # The version comes from VERSION and is used for both CFBundleShortVersionString and
 # CFBundleVersion (Sparkle compares the latter, dotted numbers compare naturally).
@@ -62,6 +64,11 @@ cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-emoji.txt"
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+step "minimum macOS"
+# No binary may need a newer macOS than Info.plist declares (Homebrew's Python follows the
+# macOS it was built on, so this moves when the build Mac is upgraded).
+$PY scripts/check_min_macos.py "$APP"
 
 step "sign"
 scripts/sign_app.sh "$APP" "$IDENTITY"
