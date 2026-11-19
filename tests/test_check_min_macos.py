@@ -75,11 +75,12 @@ def test_the_declared_minimum_matches_the_swift_package():
     assert declared == swift == "27.0"
 
 
-def _fake_bundle(tmp_path, declared, otool_by_name, monkeypatch):
+def _fake_bundle(tmp_path, declared, otool_by_name, monkeypatch, executable=None):
     """A bundle of files that only start like Mach-O, with otool's output for each made up."""
     app = tmp_path / "fake.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)
-    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"LSMinimumSystemVersion": declared}))
+    info = {"LSMinimumSystemVersion": declared} | ({"CFBundleExecutable": executable} if executable else {})
+    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
     for name in otool_by_name:
         (app / "Contents" / "MacOS" / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 28)
     monkeypatch.setattr(check_min_macos, "load_commands", lambda f: otool_by_name[f.name])
@@ -95,6 +96,21 @@ def test_a_universal_binary_is_reported_with_its_neediest_slice(tmp_path, monkey
     app = _fake_bundle(tmp_path, "27.0", {"uni": _slice("arm64", "27.1") + _slice("arm64e", "28.0")}, monkeypatch)
     declared, newest, too_new, n = check_min_macos.check(app)
     assert too_new == [(Path("Contents/MacOS/uni"), "28.0")] and newest == "28.0"   # not 27.1, the first
+
+
+def test_the_build_stops_when_info_plist_and_the_swift_executable_disagree(tmp_path, monkeypatch, capsys):
+    # Info.plist raised to 28.0, Package.swift left at 27.0: no binary needs more than 28.0,
+    # so only the executable's own minimum gives it away.
+    app = _fake_bundle(tmp_path, "28.0", {"AgentFarm": _slice("arm64", "27.0")}, monkeypatch, executable="AgentFarm")
+    assert check_min_macos.main(["check", str(app)]) == 1
+    err = capsys.readouterr().err
+    assert "Contents/MacOS/AgentFarm" in err and "records macOS 27.0" in err and "Package.swift" in err
+
+
+def test_the_build_goes_on_when_they_agree(tmp_path, monkeypatch, capsys):
+    app = _fake_bundle(tmp_path, "27", {"AgentFarm": _slice("arm64", "27.0")}, monkeypatch, executable="AgentFarm")
+    assert check_min_macos.main(["check", str(app)]) == 0
+    assert "the app's executable records the same minimum" in capsys.readouterr().out
 
 
 def test_every_mach_o_header_is_recognized_and_nothing_else(tmp_path):

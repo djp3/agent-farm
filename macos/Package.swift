@@ -7,7 +7,8 @@ import PackageDescription
 let package = Package(
     name: "AgentFarm",
     // macOS 27, the same minimum as LSMinimumSystemVersion in Info.plist: the bundled Python
-    // (Homebrew's) is built for it. scripts/check_min_macos.py keeps the two honest.
+    // (Homebrew's) is built for it. The build stops (scripts/check_min_macos.py) when the
+    // executable this makes records a different minimum from Info.plist's.
     platforms: [.macOS("27.0")],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.99.3"),

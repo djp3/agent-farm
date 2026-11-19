@@ -87,24 +87,47 @@ def check(app: Path) -> tuple[str, str, list[tuple[Path, str]], int]:
     return declared, newest, too_new, n
 
 
+def executable_minimum(app: Path) -> tuple[Path, str | None] | None:
+    """The app's own executable and the minimum it records, which is the platform in
+    macos/Package.swift; None when Info.plist names no executable."""
+    name = plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleExecutable")
+    if not name:
+        return None
+    exe = app / "Contents" / "MacOS" / name
+    found = min_versions(load_commands(exe))
+    return exe.relative_to(app), (max(found, key=version) if found else None)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         return 2
-    declared, newest, too_new, n = check(Path(argv[1]))
-    if not too_new:
-        print(f"{n} binaries checked: none needs a macOS newer than {declared}, the declared minimum "
-              f"(the newest any needs is {newest})")
-        return 0
-    print(f"Info.plist declares macOS {declared} (LSMinimumSystemVersion), but {len(too_new)} "
-          f"of {n} binaries need a newer macOS:", file=sys.stderr)
-    for path, v in too_new[:10]:
-        print(f"  {path}: macOS {v}", file=sys.stderr)
-    if len(too_new) > 10:
-        print(f"  ... and {len(too_new) - 10} more", file=sys.stderr)
-    print("Build them for an older macOS, or raise the minimum: LSMinimumSystemVersion in "
-          "macos/Info.plist, the platform in macos/Package.swift, and the README.", file=sys.stderr)
-    return 1
+    app = Path(argv[1])
+    declared, newest, too_new, n = check(app)
+    failed = False
+    own = executable_minimum(app)
+    if own and (own[1] is None or version(own[1]) != version(declared)):
+        # The two places that state the minimum must agree; check() alone only notices
+        # Package.swift being the higher one.
+        print(f"Info.plist declares macOS {declared} (LSMinimumSystemVersion), but the app's own "
+              f"executable ({own[0]}) records macOS {own[1] or '(none)'}. Set the platform in "
+              f"macos/Package.swift to {declared} too.", file=sys.stderr)
+        failed = True
+    if too_new:
+        print(f"Info.plist declares macOS {declared} (LSMinimumSystemVersion), but {len(too_new)} "
+              f"of {n} binaries need a newer macOS:", file=sys.stderr)
+        for path, v in too_new[:10]:
+            print(f"  {path}: macOS {v}", file=sys.stderr)
+        if len(too_new) > 10:
+            print(f"  ... and {len(too_new) - 10} more", file=sys.stderr)
+        print("Build them for an older macOS, or raise the minimum: LSMinimumSystemVersion in "
+              "macos/Info.plist, the platform in macos/Package.swift, and the README.", file=sys.stderr)
+        failed = True
+    if failed:
+        return 1
+    print(f"{n} binaries checked: none needs a macOS newer than {declared}, the declared minimum "
+          f"(the newest any needs is {newest}), and the app's executable records the same minimum")
+    return 0
 
 
 if __name__ == "__main__":
