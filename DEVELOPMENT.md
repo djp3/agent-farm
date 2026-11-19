@@ -18,6 +18,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 | `limits.py` | plan limits (the `/usage` windows) from Anthropic's OAuth usage endpoint, with the Claude Code sign-in from the Keychain; reads both reply shapes (the `limits` rows and the older keys); opt-in, via system `curl` |
 | `ordering.py` | the orderings; an `Ordering` is a tuple of `Tier`s, each with a `match` predicate and a sort `key`; add one and append it to `ORDERINGS` |
 | `settings.py` | persisted settings; a new setting is a dataclass field with a default |
+| `grange.py` | which sessions are reported to agent-grange: the patterns from the settings, `reported(name, patterns)`, and `samples(pattern)`, which draws strings a pattern matches from Python's own parse of it |
 | `apppaths.py` | where logs and settings live: next to the code from a checkout, under `~/Library` in the app |
 | `supervisor.py`, `supervisor.sh` | development runner that restarts `main.py` when a `.py` file changes |
 | `macos/` | the SwiftPM package for the host app (`Package.swift`, `Sources/AgentFarm`, `Info.plist`) |

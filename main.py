@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import groupby
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual import events, work
@@ -35,12 +36,13 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import (Footer, Label, RadioButton, RadioSet, Static, Switch,
+from textual.widgets import (Button, Footer, Input, Label, RadioButton, RadioSet, Static, Switch,
                              Tree)
 from textual.widgets.tree import TreeNode
 
 from collector import (GIT_INSTALL_HINT, Agent, Collector, ErrorCounter, Instance, Shell, clean_text,
                        fmt_age, fmt_tokens, setup_logging)
+import grange
 from apppaths import app_version
 from expiring import DAY, DEFAULT_PERIOD_DAYS, Expiring, ExpiryScanner
 from expiring import WINDOW_DAYS as EXPIRY_DAYS
@@ -1470,6 +1472,50 @@ def agent_fingerprint(inst: Instance) -> dict[str, tuple]:
     return fp
 
 
+def grange_samples_text(pattern: str, width: int = 0) -> Text:
+    """The line under a pattern in the settings: strings it matches, as many whole ones as
+    fit in width terminal cells (0: all of them) so none is broken across lines, or why
+    the pattern can't be used."""
+    problem = grange.check(pattern)
+    if problem:
+        return Text(f"not a valid pattern: {problem}", style=RED)
+    found = grange.samples(pattern)
+    if found is None:
+        return Text("took too long to try (it backtracks badly), so no examples; "
+                    "a name that slow to check is not reported", style=YELLOW)
+    if not found:
+        return Text("no short example could be drawn from this pattern", style="dim")
+    t = Text("matches names containing, e.g.  ", style="dim")
+    shown = 0
+    for sample in found:
+        label = sample or "(nothing)"
+        sep = "  ·  " if shown else ""
+        if width and t.cell_len + cell_len(sep + label) > width:
+            continue                    # cells, not characters: 世 takes two; a shorter one may fit
+        t.append(sep, style="dim")
+        t.append(label, style="bold" if sample else "dim italic")
+        shown += 1
+    if not shown:
+        return Text("its examples are too wide to show at this width", style="dim")
+    return t
+
+
+class SampleLine(Widget):
+    """What a pattern matches, laid out for the width it has; or a note in its place."""
+    DEFAULT_CSS = "SampleLine { height: auto; padding: 0 0 0 5; }"
+
+    def __init__(self, pattern: str = "", note: Text | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.pattern, self.note = pattern, note
+
+    def show(self, pattern: str = "", note: Text | None = None) -> None:
+        self.pattern, self.note = pattern, note
+        self.refresh(layout=True)
+
+    def render(self) -> Text:
+        return self.note if self.note is not None else grange_samples_text(self.pattern, self.content_size.width)
+
+
 class SettingsScreen(Screen):
     """Full-screen settings. Changes apply immediately and are saved to disk."""
     BINDINGS = [
@@ -1479,6 +1525,7 @@ class SettingsScreen(Screen):
     ]
     DEFAULT_CSS = """
     SettingsScreen { align: center top; }
+    #settings-scroll { align-horizontal: center; }
     #settings { width: 90; max-width: 100%; height: auto; margin: 1 2; padding: 1 2;
                 border: round $primary; }
     #settings .title { text-style: bold; margin-bottom: 1; }
@@ -1487,7 +1534,14 @@ class SettingsScreen(Screen):
     #settings .section { margin-top: 1; text-style: bold; color: $text-muted; }
     #settings RadioSet { border: none; padding: 0; }
     #settings .hint { color: $text-muted; margin-top: 1; }
+    #grange-list { height: auto; }
+    #settings .grange-row { height: 3; }
+    #settings .grange-row RadioButton { width: 1fr; }
+    #grange-add-row { height: 3; margin-top: 1; }
+    #grange-add-row Input { width: 1fr; }
     """
+
+    PREVIEW_HINT = Text("What a new pattern matches shows here as you type it.", style="dim")
 
     def __init__(self, settings: Settings, on_change) -> None:
         super().__init__()
@@ -1495,7 +1549,7 @@ class SettingsScreen(Screen):
         self.on_change = on_change
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="settings"):
+        with VerticalScroll(id="settings-scroll"), Vertical(id="settings"):
             yield Static("Settings", classes="title")
             with Horizontal(classes="row"):
                 yield Label("Show status text in rows  (state word and age; the triangle color says the same)")
@@ -1521,9 +1575,73 @@ class SettingsScreen(Screen):
             with RadioSet(id="ordering"):
                 for o in ORDERINGS:
                     yield RadioButton(f"{o.name}  —  {o.description}", value=(o.name == self.settings.ordering))
+            yield Static("Report to agent-grange  (a session is reported when its name matches a pattern "
+                         "that is on; a pattern matches anywhere in the name unless anchored with ^ or $)",
+                         classes="section")
+            yield Vertical(*self._pattern_rows(), id="grange-list")
+            with Horizontal(id="grange-add-row"):
+                yield Input(placeholder="Add a pattern (a Python regular expression); Enter adds it",
+                            max_length=grange.PATTERN_MAX, id="grange-new")
+                yield Button("Add", id="grange-add")
+            yield SampleLine(note=self.PREVIEW_HINT, id="grange-preview")
             yield Static(f"Saved to {Settings.path().name} as you change them · esc returns to the monitor",
                          classes="hint")
         yield Footer()
+
+    def _pattern_rows(self) -> list[Widget]:
+        """One row per pattern, its on/off button first, with strings it matches beneath."""
+        entries = self.settings.grange_patterns
+        if not entries:
+            return [SampleLine(note=Text("No patterns yet, so no session is reported.", style="dim"))]
+        rows: list[Widget] = []
+        for i, e in enumerate(entries):
+            rows.append(Horizontal(RadioButton(Text(e["pattern"]), value=e["enabled"], id=f"grange-on-{i}"),
+                                   Button("Remove", id=f"grange-rm-{i}"), classes="grange-row"))
+            rows.append(SampleLine(e["pattern"]))
+        return rows
+
+    async def _show_patterns(self) -> None:
+        box = self.query_one("#grange-list", Vertical)
+        await box.remove_children()
+        await box.mount_all(self._pattern_rows())
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "grange-new":
+            preview = self.query_one("#grange-preview", SampleLine)
+            preview.show(event.value) if event.value else preview.show(note=self.PREVIEW_HINT)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "grange-new":
+            await self._add_pattern()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "grange-add":
+            await self._add_pattern()
+        elif bid.startswith("grange-rm-"):
+            del self.settings.grange_patterns[int(bid.removeprefix("grange-rm-"))]
+            self._changed()
+            await self._show_patterns()
+
+    def on_radio_button_changed(self, event: RadioButton.Changed) -> None:
+        bid = event.radio_button.id or ""
+        if bid.startswith("grange-on-"):
+            self.settings.grange_patterns[int(bid.removeprefix("grange-on-"))]["enabled"] = event.value
+            self._changed()
+
+    async def _add_pattern(self) -> None:
+        box = self.query_one("#grange-new", Input)
+        pattern = box.value
+        problem = grange.check(pattern)
+        if problem is None and any(e["pattern"] == pattern for e in self.settings.grange_patterns):
+            problem = "it is already in the list"
+        if problem:
+            self.query_one("#grange-preview", SampleLine).show(note=Text(f"not added: {problem}", style=RED))
+            return
+        self.settings.grange_patterns.append({"pattern": pattern, "enabled": True})
+        self._changed()
+        box.value = ""                         # the preview goes back to its hint
+        await self._show_patterns()
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
         if event.switch.id == "show_status_text":
