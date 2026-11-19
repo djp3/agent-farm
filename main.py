@@ -1729,7 +1729,7 @@ class Divider(Widget):
 
 
 class AgentFarm(App):
-    TITLE = "agent-farm"
+    TITLE = "agent-farm"        # names exported screenshots (SVG title, file name); the window title is title_for's
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }
