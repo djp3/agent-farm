@@ -77,10 +77,15 @@ Steps, all in that script:
    the image is newer than the cached `AppIcon.icns`; never Apple's emoji artwork, which is
    not licensed for redistribution), its license notice, and `Info.plist` with `VERSION` filled in for
    both `CFBundleShortVersionString` and `CFBundleVersion`.
-4. **Check the minimum macOS** with `scripts/check_min_macos.py`: the build stops if any
-   binary in the bundle needs a newer macOS than `LSMinimumSystemVersion` declares, or if
-   the Swift executable records a different minimum (`Package.swift` and `Info.plist` must
-   agree).
+4. **Check the minimum macOS** with `scripts/check_min_macos.py`. It reads each binary's
+   Mach-O header itself (no otool, standard library only) and counts only the Apple-silicon
+   slices. The build stops if:
+   - any binary needs a newer macOS than `LSMinimumSystemVersion` declares;
+   - a binary records no minimum at all;
+   - the Swift executable is missing, or records a different minimum (`Package.swift` and
+     `Info.plist` must agree).
+   
+   agent-frolic runs the same check.
 5. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
    nested `Python.framework`, the entry executable with `packaging/python.entitlements`,
    Sparkle's helpers and framework, then the app. Local builds are ad-hoc signed without the
