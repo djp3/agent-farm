@@ -97,9 +97,11 @@ Builds are Apple-silicon only, like the machine they are built on.
 **The minimum macOS is 27**, declared in `macos/Info.plist` (`LSMinimumSystemVersion`, which
 Finder checks and the update feed passes to Sparkle) and in `macos/Package.swift`. It
 follows the bundled Python. Releases are built with Homebrew's Python, and Homebrew builds
-it for the macOS it runs on, so every part of the Python tree records macOS 27 as its
-minimum. When the build Mac moves to a newer macOS and Homebrew's Python follows, step 4
-stops the build and lists the files. Then either raise the minimum in both files and the
+it for the macOS it runs on, so Python itself, its standard-library modules and the
+Homebrew libraries they load (OpenSSL, xz and others) record macOS 27 as their minimum. The
+rest records older versions: the wheels from PyPI, PyInstaller's launcher, Sparkle, and
+Homebrew libraries that were last built on an older macOS. When the build Mac moves to a
+newer macOS and Homebrew's packages follow, step 4 stops the build and lists the files. Then either raise the minimum in both files and the
 README, or build with a Python made for older systems (python.org's installer). The release
 workflow on GitHub uses `actions/setup-python`, whose Python targets older macOS versions.
 
