@@ -59,31 +59,32 @@ with its notes. **agent-farm ▸ Check for Updates…** checks now.
 You need macOS 27 (Golden Gate) or later on Apple silicon, and Claude Code. To reach iTerm2
 tabs, turn on iTerm2's Python API (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable Python API).
 
-**On macOS 26 (Tahoe) or earlier?** The app carries its own copy of Python, and that copy is
-built for macOS 27, so the app can't run on an earlier macOS. macOS will refuse to open it
-and say it needs macOS 27.0 or later. In a copy you already have, **Check for Updates…**
-says an update is available but your macOS version is too old to install it. The monitor
-itself doesn't need macOS 27, so you can run it from source in a terminal instead (iTerm2
-works best). Install Python 3.14 (python.org's installer runs on earlier macOS versions),
-then:
+**On macOS 26 (Tahoe) or earlier?** The app is built for macOS 27, so it can't run on an
+earlier macOS: macOS refuses to open it and says it needs macOS 27.0 or later. In a copy you
+already have, **Check for Updates…** says an update is available but your macOS version is
+too old to install it. The monitor itself doesn't need macOS 27, so you can run it from
+source in a terminal instead (iTerm2 works best). Install Python 3.14 (python.org's
+installer runs on earlier macOS versions), then:
 
     git clone https://github.com/djp3/agent-farm.git && cd agent-farm
     python3.14 -m venv .venv && .venv/bin/pip install -r requirements.txt
     .venv/bin/python main.py
 
-Run that way, it gets no automatic updates (`git pull` brings it up to date), and its
-settings and log stay in that folder.
+Run that way, it gets no automatic updates (to update, `git pull` and run the `pip install`
+line again), and its settings and log stay in that folder.
 
 You may be asked for a few permissions along the way, all optional:
 
 - **Files and Folders** (Documents, Desktop and similar) lets agent-farm find the git
   repository of sessions working in those folders.
-- **iTerm2 access**, the first time agent-farm connects to it, lets `f` bring a tab forward.
+- **iTerm2 access**, the first time agent-farm connects to it, lets agent-farm tell which
+  tab each session is in and lets `f` bring it forward.
 - **Keychain access**, only if you turn on plan limits. See [The usage panel](#the-usage-panel).
 
 ## The window
 
-Under the title bar, two columns. On the left, from top to bottom:
+Under the title bar, two columns, and along the bottom a line of keys. On the left, from top
+to bottom:
 
 - **The fleet line**: the whole fleet at a glance, one glyph per session, plus anything
   that needs attention. Hover it for a plain-text explanation of every glyph and count.
@@ -98,8 +99,8 @@ across your projects (press `p`), and below them your token usage per day and pe
 (press `u`), which starts on the same row as the expiring pane and runs to the bottom. With
 both graphs hidden the panel closes and the left column takes the whole width. Drag the line between the columns (the pointer
 turns into resize arrows over it) to make the panel wider or narrower; it remembers the
-width, and a narrower window never squeezes the session list or the panel past their
-smallest.
+width. A narrower window takes its room from the panel first, down to the panel's smallest,
+and only then from the session list.
 
 The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
 Dock, Mission Control and the window switcher show whether the farm needs you.
@@ -120,14 +121,16 @@ Dock, Mission Control and the window switcher show whether the farm needs you.
 | s | settings (esc returns) |
 | r | refresh now |
 | q | quit |
+| ctrl+p | Textual's command palette: theme, key help, a screenshot saved to Downloads |
 
 A click on a row selects it and leaves it folded or unfolded as it was; only a click on its
 triangle folds or unfolds it. That works from another app too: the click that brings
 agent-farm forward also lands on the row.
 
-The View menu changes the text size (⌘+ / ⌘-), picks any fixed-pitch font installed on
-the Mac, and toggles font smoothing; the window remembers all of that with its size and
-place. On a non-Retina display a larger size or a font such as Menlo reads steadier.
+The View menu changes the text size (⌘+ / ⌘-, and ⌘0 for the default), picks any
+fixed-pitch font installed on the Mac, and toggles font smoothing; the window remembers all
+of that with its size and place. On a non-Retina display a larger size or a font such as
+Menlo reads steadier.
 
 ### Reading a row
 
@@ -152,7 +155,7 @@ otherwise takes the state's color. The summary after it is colored only when it 
 | subagent **dormant** (finished, can be messaged again), or waiting on its own command | blue | blue | default |
 | subagent **stale** (stopped mid-task); a shell whose agent is stale | gray | gray | gray |
 | session **inactive**: a registry entry left behind, or an unregistered process | gray | gray | gray |
-| subagent **archived** (from an earlier run, log only), and the archive row | dark gray | dark gray | dark gray |
+| subagent **archived** (from an earlier run, or stopped over a day ago; log only), and the archive row | dark gray | dark gray | dark gray |
 | session agent-farm could not read (see the log) | red | red | red |
 
 So green is at work, blue at rest, gray stopped, yellow names are waiting for you, and white
@@ -163,8 +166,9 @@ After the name comes the **agent strip** column: a cyan `⧉` first when the ses
 inside the Claude desktop app, then one small triangle per subagent of the current run and
 one `✱` per five, in the icon colors and ordered running → starting → waiting on a
 command → dormant → stale. `▸` is at work and `▹` is not, so the strip reads without
-color. The strip column is as wide as the widest team on screen, and names are padded to
-a fixed column, so activity text lines up down the whole list.
+color. A strip longer than 16 marks ends in `+`. The strip column is as wide as the widest
+strip on screen, and names are padded to a fixed column, so activity text lines up down the
+whole list.
 
 Last comes the activity text: what a waiting session is waiting for, the running tool, or
 the last message; a subagent with nothing to say yet shows its task. A shell's row shows
@@ -185,6 +189,8 @@ From left to right:
 - **One `■` per head session**, grouped and colored waiting → busy → idle → inactive (yellow,
   green, blue, gray), so the count of each color is the count of sessions in that state.
 - **The fleet-wide subagent tally**, in triangles and asterisks.
+- **The counts in words** (`6 sessions · 2 busy · 1 waiting · 3 agents running`), only with
+  **Show status text in rows** on.
 - **Two red notes, only when something is wrong**: `it2 missing` when agent-farm has no way
   to reach iTerm2 at all (the `f` key needs it), and `⚠ N` for warnings logged in the last
   ten minutes.
@@ -197,8 +203,10 @@ including the ones `claude --worktree` makes), model and effort, start time, con
 and logged cost, the session summary, your last prompt, the running tool, the shells still
 running (quick ones too: how long each has run, what it is for and the command itself),
 anything queued, and the last message. Desktop-app sessions add a `where` line. For a
-subagent: its state, its task, a teammate's own color (the one Claude Code shows its name
-in), its shells and its last message. For a shell: whether it is running or stale, how
+subagent: its state, its type, a teammate's own color (the one Claude Code shows its name
+in), its task, model, start time and context size, the running tool, its shells and its
+last message. For the archive row: how many agents it holds, when they were active, and
+why they are logs only. For a shell: whether it is running or stale, how
 long, what it is for, the agent that started it, and the whole command. While the expiring
 pane has focus, the detail pane shows its selected session instead: when it was last used
 and when it expires, its folder, its size, and the command that resumes it.
@@ -218,16 +226,18 @@ At the top a chart counts them per day for the next two weeks, today at the left
 each session has its name (the one `/resume` shows), when it expires (turns 30 days old;
 it is deleted at the first cleanup after that, and until then keep still saves it, so an
 expired session can be kept too), its size with its subagents and tool results, its folder,
-and a **keep** button. Two days or less to go is yellow, with a white name: it needs you.
-The rest are gray. Sessions you started in the Claude desktop app are not listed; Claude
-Code never deletes those by age.
+and a **keep** button. Less than two days to go is yellow, with a white name: it needs you.
+The rest are gray. Sessions you started in the Claude desktop app are not listed, because
+Claude Code never deletes those by age, unless the app has released one (it leaves a marker
+file beside the transcript); a released session is listed like any other.
 
 **keep** gives a session another full 30 days. A click on the button does it, or tab to the
 pane, pick a session with ↑ ↓ and press `k`. agent-farm sets the modification time of
 everything Claude Code judges the session by to now: the transcript and the files beside
-it, the tool results, and the session's checkpoints, environment and task list. Nothing is
-written into any file, and resuming a session keeps it too. A kept session shows green for
-a minute, with the date it is safe until, and then leaves the list.
+it, the files in its session folder (tool results and MCP task output among them), and the
+session's checkpoints, environment and task list. Nothing is written into any file, and
+resuming a session keeps it too. A kept session shows green for a minute or two, with the
+date it is safe until, and then leaves the list.
 
 The pane has room for about five sessions and scrolls when they do not all fit. It hides
 itself in a short window, and the **Expiring pane** setting turns it off, leaving the left
@@ -260,35 +270,40 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
 - **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
 - **Ordering**: attention, activity, started or name.
 
-**Monitor ▸ Reveal Settings File** shows the JSON file behind the panel; the name column
-width lives only there, and so does the usage panel's width, which dragging the divider sets.
+**Monitor ▸ Reveal Settings File** shows the JSON file behind the panel (until you change a
+setting or drag the divider there is no file yet, and it opens the folder instead); the name
+column width lives only there, and so does the usage panel's width, which dragging the
+divider sets.
 
 ### The usage panel
 
-**The daily bars.** One bar per local day for the last 14 days, labelled by weekday,
+**The daily bars.** One bar per local day for the last 14 days, labelled by weekday and date,
 aggregated from every transcript under `~/.claude/projects`, subagents included. The measure
 is named in the title and over the value column; `m` cycles it. Today's bar is drawn at full
 green and the rest dimmed.
 
-The 14 days span three limit weeks, and a bar's fill says which:
+With plan limits on, the 14 days span three limit weeks, and a bar's fill says which:
 
 | fill | days |
 |------|------|
 | solid `█` | this week: the days the `week` bar counts |
 | fine stripes `▊` | last week |
-| cross-hatch `╳` | the week before |
+| cross-hatch `╳` | the week before that |
+
+With plan limits off, or just after the week resets until the next fetch, every bar is solid.
 
 The first measure, estimated limit use, gives each day's tokens the weights the project graph
 uses and shows them as a percent of your weekly limit, so the days since the week began add
 up to Claude Code's part of the `week` bar (chats and Cowork are the rest). No raw count does
 that: cache reads are almost all the tokens but are cheap, and output is under one percent of
-the tokens but a sixth of the weight. With plan limits off, or while a new week still reads
-0% (the server reports whole percents), it shows each day's share of the 14 days instead.
+the tokens but a sixth of the weight. With plan limits off, just after a reset, or while a
+new week still reads 0% (the server reports whole percents), it shows each day's share of
+the 14 days instead.
 
 Beneath the days a stacked bar splits output tokens by model, with a legend; each model keeps
 its color and texture while it is in the 14 days, so the stack reads without color. The "logged
-cost" line sums the cost checkpoints Claude Code writes at the end of each session, so
-today's sessions are not in it yet.
+cost" line sums the cost checkpoints Claude Code writes as each session ends, so sessions
+still open are not in it yet.
 
 **Plan limits.** With the setting on, a block above the days shows what `/usage` shows in
 Claude Code: one bar per rate-limit window your plan has (the current week, per-model weeks
@@ -298,9 +313,10 @@ reading, it says `reset` until the next fetch.
 
 - **Color.** Anthropic's reading of a window sets its color when the reply gives one;
   otherwise green turns orange at 75% and red at 90%.
-- **Pace.** A white tick in each bar marks how far through its window the clock is, which is where
-  an even pace would put you: a bar that stops short of the tick is using less than that, one
-  that runs past it more. Extra spend has no such clock and no white tick.
+- **Pace.** A tick in each bar marks how far through its window the clock is, which is where
+  an even pace would put you: white where it falls past the fill, a dark notch cut into the
+  fill where the fill has passed it. A bar that stops short of the tick is using less than
+  that, one that runs past it more. Extra spend has no such clock and no pace tick.
 - **Credits.** The `extra` bar is this month's spend against your monthly cap. Where the other
   rows end with the time left, it ends with the money left: your credit balance. A gold tick
   marks where those credits run out, so a fill that reaches it has spent them. Its percent
@@ -308,7 +324,8 @@ reading, it says `reset` until the next fetch.
   balance, so it reaches 100% as the fill reaches the tick. The bar turns orange at 75% of
   that and red at 90%, or sooner if Anthropic's reading of the cap says so. Otherwise it is
   drawn in the `week` bar's model colors: nothing records which models the money went to, so
-  the week's mix is an estimate.
+  the week's mix is an estimate. Without a balance (its request failed), the bar shows the
+  spend as a share of the cap, with no money left and no gold tick.
 - **Models.** The `week` bar is split by model in the colors and textures of the
   output-by-model bar below, estimated the way the project graph is, with chats and Cowork in
   gray at its end. A model's week, such as Fable's, is split the same way between that
@@ -320,35 +337,38 @@ reading, it says `reset` until the next fetch.
 Those numbers exist nowhere on disk, so agent-farm fetches them the way Claude Code does: it
 reads the Claude Code sign-in from your Keychain (the item named `Claude Code-credentials`, or
 the one Claude Code keeps for your `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`
-folder if you set one, or the credentials file Claude Code falls back to without a Keychain)
-and asks Anthropic's usage endpoint when you open the panel, then again as soon as a session
-or subagent has worked since the last fetch, at most once every five minutes. While everyone
-is idle or waiting for you no request goes out and the header says paused, since the numbers
-cannot move. While extra spend is on, each fetch also asks for your credit balance, which has
-an endpoint of its own. macOS may ask you to allow the Keychain read.
+folder if you set one, or, when the Keychain can't be read, the credentials file Claude Code
+falls back to) and asks Anthropic's usage endpoint when you open the usage or project graph
+or change a setting, then again as soon as a session or subagent has worked since the last
+fetch, at most once every five minutes. Nothing is fetched while both graphs are closed.
+While everyone is idle or waiting for you no request goes out and the header says paused,
+since the numbers cannot move. While extra spend is on, each fetch also asks for your credit
+balance, which has an endpoint of its own. macOS may ask you to allow the Keychain read.
 
 The sign-in is used as is, never renewed, never written anywhere and never logged; when it
 has expired, the block says so until Claude Code renews it. The plan's name in the header and
 the organization ID the balance request needs come from the profile Claude Code keeps in
-`~/.claude.json`, the only values taken from that file. The block is off by default, and while
-it is off it makes no network request.
+`~/.claude.json` (in your `CLAUDE_CONFIG_DIR` if you set one), the only values taken from
+that file. The block is off by default, and while it is off it makes no network request.
 
 **Projects.** Press `p` for how the week's percent was spent, on its own or above the usage
-graph: one row per GitHub repo, largest first, with the five largest named. The rows add up
-to the `week` bar, so with the week at 40% a project at 30% used most of it. Chats and Cowork
-have no folder, so each gets a row of its own. A worktree counts toward its repo and two
-clones of a repo count as one. A folder outside any repo counts toward the folder its session
-started in. Each message counts toward the folder it ran in, so agents working in the same
-repo add up, and an agent that moves between repos is split between them. Bars take the
-model colors from the output-by-model bar. To name a repo agent-farm reads the origin remote
-from its `.git/config` and keeps only the owner and repo.
+graph: one row per git repo, largest first, with the five largest named and any others
+together in one row. The rows add up to the `week` bar, so with the week at 40% a project at
+30% used most of it. Chats and Cowork have no folder, so each gets a row of its own. A
+worktree counts toward its repo, and two clones with the same origin count as one. A folder
+outside any repo counts toward the folder its session started in when it is inside that
+folder, and toward itself otherwise. Each message counts toward the folder it ran in, so
+agents working in the same repo add up, and an agent that moves between repos is split
+between them. Bars take the model colors from the output-by-model bar. To name a repo
+agent-farm reads the origin remote from its `.git/config` and keeps only the owner and repo;
+the row shows the repo's name.
 
 The split is an estimate. Anthropic reports the week's total and its shares by surface but
 not by project, so agent-farm divides Claude Code's share by what each message's tokens are
 worth relative to the others, using the list rates of its model (a model released after
 your copy of agent-farm counts at the rates of the version before it). No money is shown. With
-plan limits off, or until a new week reaches 1% (the server reports whole percents), the rows
-are percents of the last 7 days' use instead.
+plan limits off, just after a reset, or until a new week reaches 1% (the server reports whole
+percents), the rows are percents of the last 7 days' use instead.
 
 **Agents at work.** Pinned to the top of the panel, one wheat stalk per clock hour for
 the last 24 hours, the current hour at the right. A stalk's height is how many agents
@@ -360,7 +380,8 @@ transcripts: an agent counts as running from each message or tool result until i
 ends or you interrupt it, and a silence counts for at most ten minutes, so a permission
 prompt left open overnight does not read as a night of work. An agent waiting on a
 background command counts as running until Claude Code reports the command finished; one
-still going counts up to now while its shell is running.
+still going counts up to now while its shell is running, and for at most ten minutes once
+its shell is gone.
 
 ## What the states mean
 
@@ -373,14 +394,17 @@ still going counts up to now while its shell is running.
   running is waiting on it: a background command, a monitor, or a command moved to the
   background. A shell is **stale** when the subagent that started it stopped mid-task, so
   nothing will read its result.
-- Subagents are **running** while their transcript changed in the last 90 s, or ends mid
-  tool-call and is under 15 min old; **dormant** once the head agent received their final
-  message (they stay resident and can be messaged again); **stale** when they end mid
-  tool-call and have been silent over 15 min, and **archived** once that silence passes a
-  day; **archived** too when their last activity predates the current head process.
+- Subagents are **starting** until their transcript appears; **running** while their
+  transcript changed in the last 90 s, or ends mid tool-call and is under 15 min old;
+  **dormant** once the head agent received their final message, or once their transcript
+  ends on a reply and has been quiet 90 s (they stay resident and can be messaged again);
+  **stale** when they end mid tool-call and have been silent over 15 min, and **archived**
+  once that silence passes a day; **archived** too when their last activity predates the
+  current head process, and once the head session's process has ended.
 - A head session's row unfolds on its own when a subagent has a material update: a new
-  agent, a state change, or a new message. Plain tool calls do not count, so a row you
-  folded stays folded until something worth seeing happens.
+  agent, a state change, or a new message, and, while the session waits on a command of its
+  own, when a new shell row appears. A subagent's row unfolds for its first shell. Plain tool
+  calls do not count, so a row you folded stays folded until something worth seeing happens.
 - Archived subagents sit under a collapsed **archived (N)** row at the bottom of their
   head session's team. Agents from an earlier run of a resumed session are transcripts
   only and cannot be woken, so agent-farm never unfolds that row by itself.
@@ -392,11 +416,11 @@ still going counts up to now while its shell is running.
 | settings | `~/Library/Application Support/agent-farm/settings.json` |
 | log | `~/Library/Logs/agent-farm/agent-farm.log` |
 
-Errors never appear in detail on screen; the fleet line only shows the `⚠ N` badge.
-**Monitor ▸ Open Log Folder** opens the log, which records failed focus attempts and why,
-unreadable registry files, malformed transcript rows and any crash. If the monitor inside
-the window ever stops, the window says so and **Monitor ▸ Restart Monitor** (⌘R) starts
-it again.
+Errors stay in the log. On screen there is only the fleet line's `⚠ N` badge, and a short
+note when `f` fails. **Monitor ▸ Open Log Folder** opens the folder holding the log, which
+records failed focus attempts and why, unreadable registry files, malformed transcript rows
+and any crash. If the monitor inside the window ever stops, the window says so and
+**Monitor ▸ Restart Monitor** (⌘R) starts it again.
 
 ## How it works
 
