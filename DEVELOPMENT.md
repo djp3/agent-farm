@@ -57,8 +57,9 @@ Dependencies are pinned exactly in `requirements.txt` and `requirements-build.tx
 `requirements.lock` lists every package, indirect ones included, with the hashes of their
 files. The release workflow installs from the lock with `--require-hashes`, so what ships
 is decided by the repository, not by the package index on release day. To upgrade a
-library: bump its pin, regenerate the lock, run the tests, commit all three together
-(`--upgrade` also moves the indirect packages to their latest versions):
+library: bump its pin, regenerate the lock, run the tests, commit all three together. The
+command below keeps every indirect package at the version already locked; add `--upgrade`
+to move them all to their latest versions too:
 
     .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe \
         -o requirements.lock requirements.txt requirements-build.txt
