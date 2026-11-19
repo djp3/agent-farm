@@ -2,8 +2,8 @@
 
 **Run a dozen Claude Code agents without dealing with a dozen tabs.**
 
-Aaah!  One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
-ago. Something used a third of your week's limit and you can't say what. agent-farm is a Mac app that
+Keeping your agents working can be tricky: One agent has been waiting twenty minutes for a one-word answer. Another finished an hour
+ago. Something used a third of your week's limit and you can't say what. Enter agent-farm.  It is a deterministic (no LLMs) Mac app that
 puts your whole fleet in one window, with whatever needs you at the top, so your agents keep
 moving and you step in when needed.  Engineered for Claude Code and iTerm2.
 
@@ -15,9 +15,8 @@ Apple silicon · free and open source
 ### The agent that needs you is always on top
 
 Every session in iTerm2 and the Claude desktop app lands on one list, with whoever has waited
-longest first. Pick one, press `f`, and you're in its tab (this is surprisingly great). Even the title bar pitches in: one
-🐓 per session that's busy or waiting, so the Dock and the window switcher show how the farm
-is doing before you open it.
+longest first. Pick one, press `f`, and you're in its tab (this is surprisingly great). One
+🐓 per session in the title bar for any agent that's busy or waiting.
 
 ### The whole team at a glance
 
@@ -40,8 +39,7 @@ going next, and one click (or `k`) gives any of them another 30 days before purg
 ### Installs nothing. Stays on your Mac.
 
 No hooks, no plugins, no changes to your Claude Code setup. agent-farm reads the files Claude
-Code already writes, checks the process list, and listens to iTerm2 over one quiet connection,
-with a ♥ that beats each time it checks in. It sends none of your work anywhere: its only
+Code already writes, checks the process list, and listens to iTerm2 over one quiet connection. It sends none of your work anywhere: its only
 network traffic is a daily update check with GitHub and, if you turn plan limits on, the same
 usage and credit balance requests Claude Code makes. Apart from its own settings and log, the only thing it ever
 changes is a session's file modification times, when you press keep.
@@ -125,7 +123,7 @@ get triangles, shells a circle:
 | ▷ | an agent with nothing beneath it |
 | ◐ | a shell: a command an agent started, still running |
 
-The colors follow one rule. The icon says what the row is doing. The name is **yellow for
+The icon color says what the row is doing. The name is **yellow for
 a session waiting for your input** and **white for an idle one you can talk to**, and
 otherwise takes the state's color. The summary after it is colored only when it needs you or is over:
 
