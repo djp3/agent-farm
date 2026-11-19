@@ -17,7 +17,8 @@ import sys
 from pathlib import Path
 
 MACHO_MAGIC = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
-               b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}      # 64- and 32-bit, both byte orders, universal
+               b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",          # 64- and 32-bit, both byte orders, universal
+               b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}          # universal with 64-bit offsets (lipo -fat64)
 
 
 def version(v: str) -> tuple[int, ...]:

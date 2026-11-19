@@ -73,6 +73,14 @@ def test_a_universal_binary_is_reported_with_its_neediest_slice(tmp_path, monkey
     assert too_new == [(Path("Contents/MacOS/uni"), "28.0")] and newest == "28.0"   # not 27.1, the first
 
 
+def test_every_mach_o_header_is_recognized_and_nothing_else(tmp_path):
+    heads = {"thin64": b"\xcf\xfa\xed\xfe", "thin32": b"\xce\xfa\xed\xfe", "fat": b"\xca\xfe\xba\xbe",
+             "fat64": b"\xca\xfe\xba\xbf", "fat64-swapped": b"\xbf\xba\xfe\xca", "text": b"#!/b"}
+    for name, head in heads.items():
+        (tmp_path / name).write_bytes(head + b"\0" * 28)
+    assert sorted(f.name for f in check_min_macos.binaries(tmp_path)) == sorted(set(heads) - {"text"})
+
+
 def _bundle(tmp_path, declared):
     app = tmp_path / "x.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)
