@@ -26,17 +26,41 @@ Load command 10
       cmd LC_SOURCE_VERSION
   cmdsize 16
   version 0.0
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform 6
+    minos 28.0
+      sdk 27.2
+dist/x (architecture arm64e.x1):
+Load command 7
+      cmd LC_VERSION_MIN_MACOSX
+  cmdsize 16
+  version 26.0
+      sdk 27.0
 dist/x (architecture x86_64):
 Load command 8
       cmd LC_VERSION_MIN_MACOSX
   cmdsize 16
-  version 10.13
+  version 29.0
       sdk 11.0
 """
 
+THIN = """\
+dist/y:
+Load command 8
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform 1
+    minos 25.1
+      sdk 27.0
+"""
 
-def test_reads_each_architectures_minimum_and_nothing_else():
-    assert check_min_macos.min_versions(OTOOL) == ["27.0", "10.13"]     # not LC_SOURCE_VERSION's
+
+def test_reads_the_macos_minimum_of_each_apple_silicon_slice_and_nothing_else():
+    # not LC_SOURCE_VERSION's version, the Mac Catalyst record (platform 6), or the Intel slice
+    assert check_min_macos.min_versions(OTOOL) == ["27.0", "26.0"]
+    assert check_min_macos.min_versions(THIN) == ["25.1"]           # a thin file names no architecture
 
 
 def test_versions_compare_as_numbers():

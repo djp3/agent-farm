@@ -27,17 +27,30 @@ def version(v: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (3 - len(parts)))
 
 
+MACOS_PLATFORM = {"1", "MACOS", "macos"}       # LC_BUILD_VERSION's platform for macOS (6 is Mac Catalyst)
+
+
 def min_versions(otool_l: str) -> list[str]:
-    """The oldest macOS each architecture in `otool -l` output runs on: LC_BUILD_VERSION's
-    minos, or the older LC_VERSION_MIN_MACOSX's version."""
-    out, cmd = [], None
+    """The oldest macOS each slice that runs here records in `otool -l` output: LC_BUILD_VERSION's
+    minos for the macOS platform, or the older LC_VERSION_MIN_MACOSX's version. The app is
+    Apple-silicon only, so Intel slices never run, and neither do other platforms' records (the
+    Mac Catalyst one in a zippered library); their minimums don't count."""
+    out, cmd, platform, arch = [], None, None, None
     for line in otool_l.splitlines():
         words = line.split()
-        if len(words) >= 2 and words[0] == "cmd":
-            cmd = words[1]
+        if line.endswith(":") and not line[:1].isspace():      # "path (architecture arm64):", or "path:"
+            _, named, rest = line.rpartition(" (architecture ")
+            arch, cmd = (rest[:-2] if named else None), None
+        elif len(words) >= 2 and words[0] == "cmd":
+            cmd, platform = words[1], None
+        elif len(words) >= 2 and cmd == "LC_BUILD_VERSION" and words[0] == "platform":
+            platform = words[1]
         elif len(words) >= 2 and (cmd, words[0]) in (("LC_BUILD_VERSION", "minos"),
                                                      ("LC_VERSION_MIN_MACOSX", "version")):
-            out.append(words[1])
+            runs_here = arch is None or arch.startswith("arm64")    # a thin file names no architecture
+            macos = cmd == "LC_VERSION_MIN_MACOSX" or platform in MACOS_PLATFORM
+            if runs_here and macos:
+                out.append(words[1])
             cmd = None
     return out
 
