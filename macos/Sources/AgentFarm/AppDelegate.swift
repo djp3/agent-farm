@@ -231,6 +231,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             (self.terminal as? FirstClickTerminalView)?.showPointer(named: "default")   // no one left to ask
+            // The monitor clears its title only on a clean quit; after a crash its last title
+            // (chickens for sessions it no longer watches) would stay in the Dock and switcher.
+            // Queued after any title it set, so this is the last word until a new one starts.
+            self.window.title = self.defaultTitle
             if self.restartRequested {       // Restart Monitor: the clean exit was ours
                 self.restartRequested = false
                 self.startCore()
