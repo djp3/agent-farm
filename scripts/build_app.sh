@@ -63,6 +63,11 @@ cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-em
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
+step "minimum macOS"
+# No binary may need a newer macOS than Info.plist declares (Homebrew's Python follows the
+# macOS it was built on, so this moves when the build Mac is upgraded).
+$PY scripts/check_min_macos.py "$APP"
+
 step "sign"
 scripts/sign_app.sh "$APP" "$IDENTITY"
 

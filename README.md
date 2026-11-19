@@ -7,7 +7,7 @@ ago. Something used a third of your week's limit and you can't say what. agent-f
 puts your whole fleet in one window, with whatever needs you at the top, so your agents keep
 moving and you step in when needed.  Engineered for Claude Code and iTerm2.
 
-**[Download for Mac](https://github.com/djp3/agent-farm/releases/latest)** · macOS 13+ on
+**[Download for Mac](https://github.com/djp3/agent-farm/releases/latest)** · macOS 27+ on
 Apple silicon · free and open source
 
 ![agent-farm showing a fleet of Claude Code sessions with the usage panel, project graph and detail pane](docs/screenshot.png)
@@ -56,8 +56,23 @@ changes is a session's file modification times, when you press keep.
 Updates take care of themselves: the app checks GitHub once a day and offers each new release
 with its notes. **agent-farm ▸ Check for Updates…** checks now.
 
-You need macOS 13 or later on Apple silicon, and Claude Code. To reach iTerm2 tabs, turn on
-iTerm2's Python API (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable Python API).
+You need macOS 27 (Golden Gate) or later on Apple silicon, and Claude Code. To reach iTerm2
+tabs, turn on iTerm2's Python API (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable Python API).
+
+**On macOS 26 (Tahoe) or earlier?** The app carries its own copy of Python, and that copy is
+built for macOS 27, so the app can't run on an earlier macOS. macOS will refuse to open it
+and say it needs macOS 27.0 or later. In a copy you already have, **Check for Updates…**
+says an update is available but your macOS version is too old to install it. The monitor
+itself doesn't need macOS 27, so you can run it from source in a terminal instead (iTerm2
+works best). Install Python 3.14 (python.org's installer runs on earlier macOS versions),
+then:
+
+    git clone https://github.com/djp3/agent-farm.git && cd agent-farm
+    python3.14 -m venv .venv && .venv/bin/pip install -r requirements.txt
+    .venv/bin/python main.py
+
+Run that way, it gets no automatic updates (`git pull` brings it up to date), and its
+settings and log stay in that folder.
 
 You may be asked for a few permissions along the way, all optional:
 

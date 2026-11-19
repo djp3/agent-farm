@@ -57,7 +57,8 @@ Dependencies are pinned exactly in `requirements.txt` and `requirements-build.tx
 `requirements.lock` lists every package, indirect ones included, with the hashes of their
 files. The release workflow installs from the lock with `--require-hashes`, so what ships
 is decided by the repository, not by the package index on release day. To upgrade a
-library: bump its pin, regenerate the lock, run the tests, commit all three together:
+library: bump its pin, regenerate the lock, run the tests, commit all three together
+(`--upgrade` also moves the indirect packages to their latest versions):
 
     .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe \
         -o requirements.lock requirements.txt requirements-build.txt
@@ -74,7 +75,9 @@ Steps, all in that script:
    the image is newer than the cached `AppIcon.icns`; never Apple's emoji artwork, which is
    not licensed for redistribution), its license notice, and `Info.plist` with `VERSION` filled in for
    both `CFBundleShortVersionString` and `CFBundleVersion`.
-4. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
+4. **Check the minimum macOS** with `scripts/check_min_macos.py`: the build stops if any
+   binary in the bundle needs a newer macOS than `LSMinimumSystemVersion` declares.
+5. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
    nested `Python.framework`, the entry executable with `packaging/python.entitlements`,
    Sparkle's helpers and framework, then the app. Local builds are ad-hoc signed without the
    hardened runtime (an ad-hoc signature has no team, so a hardened-runtime app could not
@@ -88,6 +91,15 @@ if it exits with an error, and provides the menus. `swift run` from `macos/` wor
 there is no `Info.plist`.
 
 Builds are Apple-silicon only, like the machine they are built on.
+
+**The minimum macOS is 27**, declared in `macos/Info.plist` (`LSMinimumSystemVersion`, which
+Finder checks and the update feed passes to Sparkle) and in `macos/Package.swift`. It
+follows the bundled Python. Releases are built with Homebrew's Python, and Homebrew builds
+it for the macOS it runs on, so every part of the Python tree records macOS 27 as its
+minimum. When the build Mac moves to a newer macOS and Homebrew's Python follows, step 4
+stops the build and lists the files. Then either raise the minimum in both files and the
+README, or build with a Python made for older systems (python.org's installer). The release
+workflow on GitHub uses `actions/setup-python`, whose Python targets older macOS versions.
 
 ## Releasing
 
