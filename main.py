@@ -35,7 +35,7 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import (Footer, Header, Label, RadioButton, RadioSet, Static, Switch,
+from textual.widgets import (Footer, Label, RadioButton, RadioSet, Static, Switch,
                              Tree)
 from textual.widgets.tree import TreeNode
 
@@ -64,10 +64,10 @@ DETAIL_MIN_ROWS = 8    # the detail pane gives up rows to line up with the usage
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_MIN_W = 32        # the usage column at its narrowest: its text stops shrinking at 30
 LEFT_MIN_W = 40         # a dragged divider leaves the session list at least this wide
-# Terminal title: the Mac app shows it in its title bar, iTerm2 in its tab. The in-app
-# header keeps the plain TITLE because terminal fonts render emoji unevenly. After the
-# name, one chicken per live session that is not idle (busy or waiting).
-WINDOW_TITLE = "🌾 agent-farm"
+# Terminal title: the Mac app shows it in its title bar, iTerm2 in its tab. It is the only
+# place the name and version appear; there is no header bar inside the window. After the
+# version, one chicken per live session that is not idle (busy or waiting).
+WINDOW_TITLE = f"🌾 agent-farm v{VERSION}" if VERSION else "🌾 agent-farm"
 CHICKEN = "🐓"
 GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
 USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
@@ -1495,7 +1495,6 @@ class SettingsScreen(Screen):
         self.on_change = on_change
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Vertical(id="settings"):
             yield Static("Settings", classes="title")
             with Horizontal(classes="row"):
@@ -1603,7 +1602,6 @@ class Divider(Widget):
 
 class AgentFarm(App):
     TITLE = "agent-farm"
-    SUB_TITLE = f"v{VERSION}" if VERSION else ""       # the header reads "agent-farm — v0.2.4"
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }
@@ -1695,7 +1693,6 @@ class AgentFarm(App):
 
     # ---- layout -----------------------------------------------------------
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
         with Horizontal(id="body"):
             with Vertical(id="left"):                   # the tree, what expires, the selected row
                 yield Static(Text("starting…", style="dim"), id="fleet")

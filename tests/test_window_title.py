@@ -1,5 +1,5 @@
-"""The terminal title (the Mac app's title bar, iTerm2's tab) carries the farm emoji and one
-chicken per live session that is not idle. Textual never sets a terminal title, so the app
+"""The terminal title (the Mac app's title bar, iTerm2's tab) carries the farm emoji, the
+version and one chicken per live session that is not idle. Textual never sets a terminal title, so the app
 writes OSC 0 itself: on mount, when the count changes, and cleared on exit."""
 import asyncio
 
@@ -18,12 +18,13 @@ def test_title_sequence_is_osc_zero():
     assert main.title_sequence("") == "\x1b]0;\x07"
 
 
-def test_chickens_count_live_sessions_that_are_not_idle():
-    assert main.window_title([]) == "🌾 agent-farm"
-    assert main.window_title([inst(1, "idle")]) == "🌾 agent-farm"
+def test_chickens_count_live_sessions_that_are_not_idle(monkeypatch):
+    monkeypatch.setattr(main, "WINDOW_TITLE", "🌾 agent-farm v0.9.1")
+    assert main.window_title([]) == "🌾 agent-farm v0.9.1"
+    assert main.window_title([inst(1, "idle")]) == "🌾 agent-farm v0.9.1"
     farm = [inst(1, "busy"), inst(2, "waiting"), inst(3, "idle"), inst(4, "busy", alive=False),
             inst(5, "shell")]                  # idle while its own command runs: drawn as idle
-    assert main.window_title(farm) == "🌾 agent-farm 🐓🐓"
+    assert main.window_title(farm) == "🌾 agent-farm v0.9.1 🐓🐓"
 
 
 def test_app_sets_title_on_mount_updates_it_and_clears_it_on_quit(monkeypatch):
@@ -43,7 +44,7 @@ def test_app_sets_title_on_mount_updates_it_and_clears_it_on_quit(monkeypatch):
                 await pilot.pause(0.1)
                 if len(writes) > 1:
                     break
-            assert writes[1:] == [main.title_sequence("🌾 agent-farm 🐓")]
+            assert writes[1:] == [main.title_sequence(f"{main.WINDOW_TITLE} 🐓")]
             await pilot.pause(2.5)                           # more ticks, same count: no rewrite
             assert len(writes) == 2
             await pilot.press("q")

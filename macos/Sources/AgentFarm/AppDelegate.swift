@@ -80,8 +80,13 @@ final class FirstClickTerminalView: LocalProcessTerminalView {
 /// SwiftTerm view and wires Sparkle for updates. Everything the monitor does still
 /// happens in Python; this file only provides the window, the pty and the menus.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, LocalProcessTerminalViewDelegate {
+    /// The bundle's release number ("0.2.31"); the monitor gets it as AGENT_FARM_VERSION.
+    private let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     /// Shown until the monitor sets its own title (the same text, via OSC 0) and whenever it clears it.
-    private let defaultTitle = "🌾 agent-farm"
+    private var defaultTitle: String {
+        guard let v = version, !v.isEmpty else { return "🌾 agent-farm" }
+        return "🌾 agent-farm v\(v)"
+    }
     private var window: NSWindow!
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
@@ -186,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         // brew or xcode-select), so the child only needs the PATH it was launched with.
         env.append("PATH=" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
         env.append("TERM_PROGRAM=agent-farm")
-        if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+        if let v = version {
             env.append("AGENT_FARM_VERSION=\(v)")
         }
         return env
