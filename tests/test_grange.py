@@ -3,7 +3,11 @@ sample strings drawn from it, how the setting is stored, and the settings panel'
 where each pattern has an on/off button and shows strings it matches."""
 import asyncio
 import json
+import logging
 import re
+import signal
+import threading
+import time
 
 import pytest
 
@@ -78,6 +82,61 @@ def test_no_samples_for_an_invalid_pattern_or_one_that_needs_a_long_string():
     assert grange.samples("(oops") == []
     assert grange.samples("a{500}") == []
     assert grange.samples(r"(?=x)y") == []                   # no draw satisfies the lookahead
+
+
+SLOW = r"(?!(a+)+b)a{40}"           # backtracks catastrophically on every string it draws
+
+
+def test_a_pattern_that_backtracks_badly_gets_a_note_instead_of_freezing_the_panel():
+    began = time.monotonic()
+    assert grange.samples(SLOW) is None
+    assert time.monotonic() - began < 2                 # stopped by the time limit, once
+    assert grange.samples(SLOW) is None                 # remembered: no second wait
+    assert time.monotonic() - began < 2
+    assert "took too long to try" in main.grange_samples_text(SLOW).plain
+
+
+def test_a_name_too_slow_to_check_is_not_reported_and_the_pattern_is_logged_once(caplog, monkeypatch):
+    monkeypatch.setattr(grange, "_slow_warned", set())
+    rules = [{"pattern": r"(a+)+b", "enabled": True}]
+    name = "a" * 40 + " zebra-42"
+    began = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="agent_farm.grange"):
+        assert not grange.reported(name, rules)
+        assert not grange.reported(name, rules)
+    assert time.monotonic() - began < 2
+    said = [r.getMessage() for r in caplog.records if "took over" in r.getMessage()]
+    assert len(said) == 1 and "(a+)+b" in said[0] and "zebra" not in said[0]
+    assert grange.reported("aab", rules)                # a name it is quick on still matches
+
+
+def test_the_timer_is_put_away_after_each_use():
+    rang = []
+    mine = lambda signum, frame: rang.append(signum)    # noqa: E731
+    before = signal.signal(signal.SIGALRM, mine)
+    try:
+        assert grange.reported("proj-1", [{"pattern": "proj", "enabled": True}])
+        assert grange.samples(r"timer-\d{3}")
+        assert signal.getsignal(signal.SIGALRM) is mine
+        assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        time.sleep(grange.TIME_LIMIT_S + 0.1)
+        assert rang == []
+    finally:
+        signal.signal(signal.SIGALRM, before)
+
+
+def test_off_the_main_thread_nothing_runs_without_a_time_limit():
+    out = {}
+
+    def work():
+        out["reported"] = grange.reported("proj-1", [{"pattern": "proj", "enabled": True}])
+        out["samples"] = grange.samples(r"thread-\d")
+
+    t = threading.Thread(target=work)
+    t.start()
+    t.join(5)
+    assert out == {"reported": False, "samples": None}  # the safe answers
+    assert grange.samples(r"thread-\d")                 # and that answer isn't kept for the panel
 
 
 # ---- the setting ------------------------------------------------------------
@@ -195,6 +254,15 @@ def test_an_invalid_or_repeated_pattern_is_not_added(tmp_path, monkeypatch):
 
     assert _run(tmp_path, monkeypatch, steps, saved=[{"pattern": "^wip", "enabled": False}]) == \
         [{"pattern": "^wip", "enabled": False}]
+
+
+def test_a_saved_pattern_that_backtracks_badly_does_not_freeze_the_panel(tmp_path, monkeypatch):
+    async def steps(app, pilot):
+        assert "took too long to try" in _texts(app, "#grange-list SampleLine")[0]
+
+    began = time.monotonic()
+    _run(tmp_path, monkeypatch, steps, saved=[{"pattern": r"(?!(a+)+b)a{39}", "enabled": False}])
+    assert time.monotonic() - began < 10
 
 
 def test_each_pattern_turns_on_and_off_and_can_be_removed(tmp_path, monkeypatch):

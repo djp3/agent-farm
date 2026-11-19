@@ -1478,6 +1478,9 @@ def grange_samples_text(pattern: str, width: int = 0) -> Text:
     if problem:
         return Text(f"not a valid pattern: {problem}", style=RED)
     found = grange.samples(pattern)
+    if found is None:
+        return Text("took too long to try (it backtracks badly), so no examples; "
+                    "a name that slow to check is not reported", style=YELLOW)
     if not found:
         return Text("no short example could be drawn from this pattern", style="dim")
     t = Text("matches names containing, e.g.  ", style="dim")

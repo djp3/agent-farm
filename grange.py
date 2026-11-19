@@ -7,12 +7,22 @@ that is on. Matching is re.search, so a pattern matches anywhere in the name unl
 anchored with ^ or $.
 
 samples() draws a few strings a pattern matches, for the settings panel to show beside it.
+
+Python's re has no time limit, and some patterns backtrack catastrophically: (a+)+b on a
+long run of a's tries every way to split it. So every search here runs under a timer
+(_time_limit): a pattern's examples get TIME_LIMIT_S in all, and so does each name it is
+checked against. re's matching loop checks for signals, so the timer stops a runaway
+search; a pattern that runs out of time has no examples, and counts as not matching.
 """
 from __future__ import annotations
 
+import logging
 import random
 import re
+import signal
 import string
+import threading
+from contextlib import contextmanager
 from functools import lru_cache
 
 from re import _constants as sre      # the parse tree re builds; stable in practice, and
@@ -22,6 +32,9 @@ PATTERN_MAX = 200       # characters in one pattern
 SAMPLE_COUNT = 4        # samples shown for a pattern
 SAMPLE_MAX = 40         # characters in one sample; a longer draw is dropped
 REPEAT_EXTRA = 3        # a repeat draws at most this many past its minimum
+TIME_LIMIT_S = 0.25     # for one pattern's examples, and for checking one name against it
+
+log = logging.getLogger("agent_farm.grange")
 
 _ANY = string.ascii_lowercase + string.digits                   # what . draws from
 _POOL = _ANY + string.ascii_uppercase + "-_ ."                  # a class draws from these first
@@ -59,11 +72,58 @@ def _compiled(pattern: str) -> re.Pattern | None:
     return None if check(pattern) else re.compile(pattern)
 
 
+def _on_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
+class _TooSlow(BaseException):
+    """The time limit ran out. A BaseException, so no `except Exception` on the way swallows it."""
+
+
+@contextmanager
+def _time_limit(seconds: float):
+    """Raise _TooSlow in the block once `seconds` have passed. The timer is SIGALRM, which
+    only the main thread receives (the UI runs there); on any other thread the block can't
+    be bounded, so _TooSlow comes at once and the caller takes its safe answer. Not nestable."""
+    if not _on_main_thread():
+        raise _TooSlow
+    armed = True
+
+    def on_alarm(_signum, _frame):
+        if armed:                       # a signal that lands after the block has ended is ignored
+            raise _TooSlow
+
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        armed = False
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous if previous is not None else signal.SIG_DFL)
+
+
+_slow_warned: set[str] = set()
+
+
 def reported(name: str, entries: list[dict]) -> bool:
-    """Whether a session with this name goes to agent-grange: a pattern that is on matches it."""
+    """Whether a session with this name goes to agent-grange: a pattern that is on matches it.
+    A pattern that takes longer than TIME_LIMIT_S on the name counts as not matching, so a
+    slow pattern never reports a session by accident (it is logged once, without the name)."""
     for e in entries:
         rx = _compiled(e["pattern"]) if e["enabled"] else None
-        if rx is not None and rx.search(name):
+        if rx is None:
+            continue
+        try:
+            with _time_limit(TIME_LIMIT_S):
+                hit = rx.search(name) is not None
+        except _TooSlow:
+            if e["pattern"] not in _slow_warned:
+                _slow_warned.add(e["pattern"])
+                log.warning("agent-grange pattern %r took over %.2fs on a session name; "
+                            "counted as not matching", e["pattern"], TIME_LIMIT_S)
+            continue
+        if hit:
             return True
     return False
 
@@ -72,14 +132,33 @@ class _GiveUp(Exception):
     """This draw can't make a usable sample."""
 
 
-def samples(pattern: str, count: int = SAMPLE_COUNT) -> list[str]:
+def samples(pattern: str, count: int = SAMPLE_COUNT) -> list[str] | None:
     """A few different strings the pattern matches, drawn from the pattern itself: readable
     letters and digits where it allows a choice, and short repeats. The same pattern always
     gets the same samples. Empty for an invalid pattern, or when no draw works (a pattern
-    that needs a long string, or lookarounds that no draw satisfies)."""
+    that needs a long string, or lookarounds that no draw satisfies). None when drawing and
+    checking them took longer than TIME_LIMIT_S: the pattern backtracks badly enough that it
+    would be slow on names too, or when called off the main thread, where it can't be timed.
+    Worked out once per pattern; the panel redraws often."""
+    if not _on_main_thread():
+        return None                     # not cached: the main thread may well manage it
+    found = _samples(pattern, count)
+    return None if found is None else list(found)
+
+
+@lru_cache(maxsize=256)
+def _samples(pattern: str, count: int) -> tuple[str, ...] | None:
     rx = _compiled(pattern)
     if rx is None:
-        return []
+        return ()
+    try:
+        with _time_limit(TIME_LIMIT_S):
+            return tuple(_draw_samples(pattern, rx, count))
+    except _TooSlow:
+        return None
+
+
+def _draw_samples(pattern: str, rx: re.Pattern, count: int) -> list[str]:
     try:
         tree = sre_parse.parse(pattern)
     except Exception:
