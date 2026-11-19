@@ -67,8 +67,9 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 step "minimum macOS"
 # No binary may need a newer macOS than Info.plist declares (Homebrew's Python follows the
-# macOS it was built on, so this moves when the build Mac is upgraded).
-$PY scripts/check_min_macos.py "$APP"
+# macOS it was built on, so this moves when the build Mac is upgraded). Run by itself: it
+# needs only Python's standard library, so a SKIP_PYTHON=1 build works without a venv.
+scripts/check_min_macos.py "$APP"
 
 step "sign"
 scripts/sign_app.sh "$APP" "$IDENTITY"
