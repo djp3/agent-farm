@@ -76,9 +76,15 @@ def swift_default_title() -> tuple[str, str]:
     return m.group(1), m.group(2)
 
 
+def test_the_title_names_the_version_or_leaves_it_out():
+    assert main.title_for("0.9.1") == "🌾 agent-farm v0.9.1"
+    assert main.title_for("") == "🌾 agent-farm"         # no version known: no stray "v"
+    assert main.WINDOW_TITLE == main.title_for(main.VERSION)
+
+
 def test_the_mac_apps_default_title_reads_like_the_monitors():
     # The window shows the Swift default until the monitor sets its title and after it stops,
     # so the two must agree or the title changes at every launch and quit.
-    before_version, _ = swift_default_title()
-    assert main.VERSION                                  # a checkout has a VERSION file
-    assert main.WINDOW_TITLE == f"{before_version}{main.VERSION}"
+    before_version, without_version = swift_default_title()
+    assert main.title_for("0.9.1") == f"{before_version}0.9.1"
+    assert main.title_for("") == without_version

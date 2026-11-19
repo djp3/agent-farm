@@ -66,10 +66,9 @@ DETAIL_MIN_ROWS = 8    # the detail pane gives up rows to line up with the usage
 ERROR_WINDOW_S = 600   # the fleet line's red badge counts warnings this recent
 USAGE_MIN_W = 32        # the usage column at its narrowest: its text stops shrinking at 30
 LEFT_MIN_W = 40         # a dragged divider leaves the session list at least this wide
-# Terminal title: the Mac app shows it in its title bar, iTerm2 in its tab. It is the only
-# place the name and version appear; there is no header bar inside the window. After the
-# version, one chicken per live session that is not idle (busy or waiting).
-WINDOW_TITLE = f"🌾 agent-farm v{VERSION}" if VERSION else "🌾 agent-farm"
+# Terminal title (title_for, WINDOW_TITLE): the Mac app shows it in its title bar, iTerm2 in
+# its tab. It is the only place the name and version appear; there is no header bar inside
+# the window. After the version, one chicken per live session that is not idle (busy or waiting).
 CHICKEN = "🐓"
 GUIDE_DEPTH = 3        # tree guide indent per level; must match tree.guide_depth
 USAGE_DAYS = WINDOW_DAYS   # the scanner never reads files older than this
@@ -821,6 +820,14 @@ def detail_text(obj, now: float) -> Text:
         out.append("\ncommand\n", style="bold dim")
         out.append(s.command.strip()[:1500] + "\n")
     return out
+
+
+def title_for(version: str) -> str:
+    """The title before any chickens; the Mac app's default title matches it."""
+    return f"🌾 agent-farm v{version}" if version else "🌾 agent-farm"
+
+
+WINDOW_TITLE = title_for(VERSION)
 
 
 def title_sequence(title: str) -> str:
