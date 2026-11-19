@@ -51,6 +51,28 @@ def test_the_declared_minimum_matches_the_swift_package():
     assert declared == swift == "27.0"
 
 
+def _fake_bundle(tmp_path, declared, otool_by_name, monkeypatch):
+    """A bundle of files that only start like Mach-O, with otool's output for each made up."""
+    app = tmp_path / "fake.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"LSMinimumSystemVersion": declared}))
+    for name in otool_by_name:
+        (app / "Contents" / "MacOS" / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 28)
+    monkeypatch.setattr(check_min_macos, "load_commands", lambda f: otool_by_name[f.name])
+    return app
+
+
+def _slice(arch, minos):
+    return (f"x (architecture {arch}):\nLoad command 9\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n"
+            f" platform 1\n    minos {minos}\n      sdk 27.2\n")
+
+
+def test_a_universal_binary_is_reported_with_its_neediest_slice(tmp_path, monkeypatch):
+    app = _fake_bundle(tmp_path, "27.0", {"uni": _slice("arm64", "27.1") + _slice("arm64e", "28.0")}, monkeypatch)
+    declared, newest, too_new, n = check_min_macos.check(app)
+    assert too_new == [(Path("Contents/MacOS/uni"), "28.0")] and newest == "28.0"   # not 27.1, the first
+
+
 def _bundle(tmp_path, declared):
     app = tmp_path / "x.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)

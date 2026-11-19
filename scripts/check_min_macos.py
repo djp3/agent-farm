@@ -49,21 +49,27 @@ def binaries(app: Path):
                     yield f
 
 
+def load_commands(f: Path) -> str:
+    """`otool -l` for every architecture in the file."""
+    return subprocess.run(["otool", "-arch", "all", "-l", str(f)],
+                          capture_output=True, text=True, check=True).stdout
+
+
 def check(app: Path) -> tuple[str, str, list[tuple[Path, str]], int]:
     """(declared minimum, newest minimum any binary needs, binaries that need more than
-    declared, binaries checked)."""
+    declared with the most each needs, binaries checked)."""
     declared = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())["LSMinimumSystemVersion"]
     newest, too_new, n = "0", [], 0
     for f in binaries(app):
         n += 1
-        text = subprocess.run(["otool", "-arch", "all", "-l", str(f)],
-                              capture_output=True, text=True, check=True).stdout
-        for v in min_versions(text):
-            if version(v) > version(newest):
-                newest = v
-            if version(v) > version(declared):
-                too_new.append((f.relative_to(app), v))
-                break
+        found = min_versions(load_commands(f))
+        if not found:
+            continue
+        need = max(found, key=version)          # a universal binary needs what its neediest slice needs
+        if version(need) > version(newest):
+            newest = need
+        if version(need) > version(declared):
+            too_new.append((f.relative_to(app), need))
     return declared, newest, too_new, n
 
 
