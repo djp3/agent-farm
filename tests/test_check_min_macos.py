@@ -141,6 +141,17 @@ def test_a_binary_that_needs_a_newer_macos_fails_the_build(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("otool") is None, reason="needs the Xcode command line tools")
+def test_a_file_otool_cannot_read_stops_the_build_with_its_name(tmp_path, capsys):
+    app = _bundle(tmp_path, "99.0")
+    odd = app / "Contents" / "Resources" / "Hello.class"          # a Java class file starts 0xcafebabe too
+    odd.parent.mkdir()
+    odd.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x41" + b"\x00" * 24)
+    assert check_min_macos.main(["check", str(app)]) == 1
+    err = capsys.readouterr().err
+    assert "Hello.class" in err and "Traceback" not in err
+
+
+@pytest.mark.skipif(shutil.which("otool") is None, reason="needs the Xcode command line tools")
 def test_a_bundle_within_its_declared_minimum_passes(tmp_path):
     app = _bundle(tmp_path, "99.0")
     _, newest, too_new, n = check_min_macos.check(app)

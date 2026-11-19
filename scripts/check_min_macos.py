@@ -63,10 +63,16 @@ def binaries(app: Path):
                     yield f
 
 
+class Unreadable(Exception):
+    """otool couldn't read a file that starts like a Mach-O one: (path, otool's reason)."""
+
+
 def load_commands(f: Path) -> str:
     """`otool -l` for every architecture in the file."""
-    return subprocess.run(["otool", "-arch", "all", "-l", str(f)],
-                          capture_output=True, text=True, check=True).stdout
+    run = subprocess.run(["otool", "-arch", "all", "-l", str(f)], capture_output=True, text=True)
+    if run.returncode != 0:
+        raise Unreadable(f, (run.stderr.strip().splitlines() or [f"otool exited {run.returncode}"])[-1])
+    return run.stdout
 
 
 def check(app: Path) -> tuple[str, str, list[tuple[Path, str]], int]:
@@ -103,9 +109,16 @@ def main(argv: list[str]) -> int:
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         return 2
     app = Path(argv[1])
-    declared, newest, too_new, n = check(app)
+    try:
+        declared, newest, too_new, n = check(app)
+        own = executable_minimum(app)
+    except Unreadable as e:
+        path, why = e.args
+        print(f"otool can't read {path}, which starts like a Mach-O binary (so does a Java class "
+              f"file): {why}. The check can't tell what macOS it needs; find out what it is "
+              "before shipping it.", file=sys.stderr)
+        return 1
     failed = False
-    own = executable_minimum(app)
     if own and (own[1] is None or version(own[1]) != version(declared)):
         # The two places that state the minimum must agree; check() alone only notices
         # Package.swift being the higher one.
