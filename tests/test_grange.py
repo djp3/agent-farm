@@ -171,11 +171,19 @@ def test_the_patterns_are_saved_and_read_back(tmp_path, monkeypatch):
 def test_the_sample_line_never_breaks_a_sample_across_lines():
     full = main.grange_samples_text(r"^review [a-z]+")
     assert full.plain.startswith("matches names containing")
-    for width in (40, 50, 60, 200):
-        t = main.grange_samples_text(r"^review [a-z]+", width)
-        shown = t.plain.split("e.g.  ", 1)[1].split("  ·  ")
-        assert shown and all(s in grange.samples(r"^review [a-z]+") for s in shown)
-        assert len(shown) == 1 or t.cell_len <= width
+    for pattern in (r"^review [a-z]+", "a{40}", "[一-鿿]{12}", r"proj-\d+-pr-\d+", r"x?"):
+        for width in range(20, 121, 5):
+            t = main.grange_samples_text(pattern, width)
+            if "e.g." not in t.plain:
+                assert t.plain == "its examples are too wide to show at this width"
+                continue
+            assert t.cell_len <= width, (pattern, width, t.plain)       # measured in cells
+            shown = t.plain.split("e.g.  ", 1)[1].split("  ·  ")
+            assert all(s in grange.samples(pattern) or s == "(nothing)" for s in shown)   # whole ones only
+    assert main.grange_samples_text("a{40}", 50).plain == "its examples are too wide to show at this width"
+    assert "a" * 40 in main.grange_samples_text("a{40}", 72).plain
+    wide = main.grange_samples_text("[一-鿿]{12}", 75)                   # 32 + 24 cells fit; a second doesn't
+    assert wide.cell_len <= 75 and wide.plain.count("  ·  ") == 0
     assert "not a valid pattern" in main.grange_samples_text("(oops").plain
 
 
