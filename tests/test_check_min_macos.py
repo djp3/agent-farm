@@ -5,6 +5,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -156,7 +157,7 @@ def test_a_binary_that_needs_a_newer_macos_fails_the_build(tmp_path):
     declared, newest, too_new, n = check_min_macos.check(app)
     assert n == 1 and declared == "10.0"
     assert [str(p) for p, _ in too_new] == ["Contents/MacOS/ls"]
-    run = subprocess.run(["python3", ROOT / "scripts" / "check_min_macos.py", app], capture_output=True, text=True)
+    run = subprocess.run([sys.executable, ROOT / "scripts" / "check_min_macos.py", app], capture_output=True, text=True)
     assert run.returncode == 1 and "Contents/MacOS/ls" in run.stderr
 
 
@@ -176,5 +177,5 @@ def test_a_bundle_within_its_declared_minimum_passes(tmp_path):
     app = _bundle(tmp_path, "99.0")
     _, newest, too_new, n = check_min_macos.check(app)
     assert n == 1 and too_new == [] and check_min_macos.version(newest) > (10, 0, 0)
-    run = subprocess.run(["python3", ROOT / "scripts" / "check_min_macos.py", app], capture_output=True, text=True)
+    run = subprocess.run([sys.executable, ROOT / "scripts" / "check_min_macos.py", app], capture_output=True, text=True)
     assert run.returncode == 0 and "none needs a macOS newer than 99.0" in run.stdout
