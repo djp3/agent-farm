@@ -86,9 +86,9 @@ turns into resize arrows over it) to make the panel wider or narrower; it rememb
 width, and a narrower window never squeezes the session list or the panel past their
 smallest.
 
-The title bar reads 🌾 agent-farm and the version (v0.2.31, say), then one 🐓 per session
-that is busy or waiting, so the Dock, Mission Control and the window switcher show whether
-the farm needs you.
+The title bar reads 🌾 agent-farm and its version, then one 🐓 per session that is busy or
+waiting, so the Dock, Mission Control and the window switcher show whether the farm needs
+you.
 
 ### Keys
 
@@ -245,6 +245,13 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
   Code sign-in. See the usage panel section for what that involves.
 - **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
 - **Ordering**: attention, activity, started or name.
+- **Report to agent-grange**: which sessions to share with your team through agent-grange,
+  as a list of regular expressions (Python's syntax), each with its own on/off button. A
+  session is reported when its name matches a pattern that is on, anywhere in the name
+  unless the pattern is anchored with `^` or `$`; with no patterns, nothing is reported.
+  Under each pattern, and under the one you are typing, are a few names it matches, drawn
+  from the pattern itself, so `proj-\d+-pr-\d+` shows names like `proj-5-pr-13`. Nothing
+  is sent to agent-grange yet; this only keeps the list.
 
 **Monitor ▸ Reveal Settings File** shows the JSON file behind the panel; the name column
 width lives only there, and so does the usage panel's width, which dragging the divider sets.
