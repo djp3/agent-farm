@@ -18,6 +18,15 @@ def test_title_sequence_is_osc_zero():
     assert main.title_sequence("") == "\x1b]0;\x07"
 
 
+def test_control_characters_never_reach_the_terminal_inside_a_title():
+    # BEL ends the title early, ESC starts a new command (here: clear the screen), and the
+    # 8-bit ST and CSI do the same in terminals that read C1 controls.
+    seq = main.title_sequence("🌾 agent-farm v1\x07\x1b[2J\x9c\x9b2J\x7f\n.2 🐓")
+    assert seq == "\x1b]0;🌾 agent-farm v1[2J2J.2 🐓\x07"
+    body = seq[len("\x1b]0;"):-1]
+    assert not any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in body)
+
+
 def test_chickens_count_live_sessions_that_are_not_idle(monkeypatch):
     monkeypatch.setattr(main, "WINDOW_TITLE", "🌾 agent-farm v0.9.1")
     assert main.window_title([]) == "🌾 agent-farm v0.9.1"

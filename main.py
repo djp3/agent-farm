@@ -825,7 +825,10 @@ def detail_text(obj, now: float) -> Text:
 
 def title_sequence(title: str) -> str:
     """OSC 0 sets the terminal's window title; Textual never sets one itself. An empty
-    title hands the choice back to the terminal."""
+    title hands the choice back to the terminal. Control characters (C0, DEL, C1) are
+    dropped: the title carries the version from outside the code, and a BEL, ESC or ST
+    inside it would end the sequence early and hand the rest to the terminal as input."""
+    title = "".join(c for c in title if not (ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F))
     return f"\x1b]0;{title}\x07"
 
 
