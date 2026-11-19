@@ -86,8 +86,9 @@ turns into resize arrows over it) to make the panel wider or narrower; it rememb
 width, and a narrower window never squeezes the session list or the panel past their
 smallest.
 
-The title bar reads 🌾 agent-farm, then one 🐓 per session that is busy or waiting, so the
-Dock, Mission Control and the window switcher show whether the farm needs you.
+The title bar reads 🌾 agent-farm and its version, then one 🐓 per session that is busy or
+waiting, so the Dock, Mission Control and the window switcher show whether the farm needs
+you.
 
 ### Keys
 
