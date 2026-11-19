@@ -80,13 +80,18 @@ final class FirstClickTerminalView: LocalProcessTerminalView {
 /// SwiftTerm view and wires Sparkle for updates. Everything the monitor does still
 /// happens in Python; this file only provides the window, the pty and the menus.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, LocalProcessTerminalViewDelegate {
-    /// The bundle's release number ("0.2.31"); the monitor gets it as AGENT_FARM_VERSION.
-    private let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-    /// Shown until the monitor sets its own title (the same text, via OSC 0) and whenever it clears it.
-    private var defaultTitle: String {
-        guard let v = version, !v.isEmpty else { return "🌾 agent-farm" }
-        return "🌾 agent-farm v\(v)"
-    }
+    /// The bundle's release number ("0.2.31"), cleaned the way apppaths.app_version cleans
+    /// AGENT_FARM_VERSION (surrounding whitespace and one leading "v" dropped); nil without one.
+    /// The monitor gets it as AGENT_FARM_VERSION.
+    private static let version: String? = {
+        let raw = ((Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let v = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
+        return v.isEmpty ? nil : v
+    }()
+    /// Shown until the monitor sets its own title and whenever it stops: the same text as
+    /// main.WINDOW_TITLE, which tests/test_window_title.py checks against this line.
+    private let defaultTitle = AppDelegate.version.map { "🌾 agent-farm v\($0)" } ?? "🌾 agent-farm"
     private var window: NSWindow!
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
@@ -191,7 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         // brew or xcode-select), so the child only needs the PATH it was launched with.
         env.append("PATH=" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"))
         env.append("TERM_PROGRAM=agent-farm")
-        if let v = version {
+        if let v = AppDelegate.version {
             env.append("AGENT_FARM_VERSION=\(v)")
         }
         return env

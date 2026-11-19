@@ -2,6 +2,8 @@
 version and one chicken per live session that is not idle. Textual never sets a terminal title, so the app
 writes OSC 0 itself: on mount, when the count changes, and cleared on exit."""
 import asyncio
+import re
+from pathlib import Path
 
 from textual.drivers.headless_driver import HeadlessDriver
 
@@ -60,3 +62,23 @@ def test_app_sets_title_on_mount_updates_it_and_clears_it_on_quit(monkeypatch):
 
     asyncio.run(go())
     assert writes[-1] == main.title_sequence("")
+
+
+APP_DELEGATE = Path(__file__).resolve().parent.parent / "macos" / "Sources" / "AgentFarm" / "AppDelegate.swift"
+
+
+def swift_default_title() -> tuple[str, str]:
+    """The Mac app's default title as (text before the version, title without a version),
+    read from its one definition in AppDelegate.swift."""
+    m = re.search(r'private let defaultTitle = AppDelegate\.version\.map \{ "(.*)\\\(\$0\)" \} \?\? "(.*)"',
+                  APP_DELEGATE.read_text())
+    assert m, "defaultTitle's definition in AppDelegate.swift changed shape; update this test with it"
+    return m.group(1), m.group(2)
+
+
+def test_the_mac_apps_default_title_reads_like_the_monitors():
+    # The window shows the Swift default until the monitor sets its title and after it stops,
+    # so the two must agree or the title changes at every launch and quit.
+    before_version, _ = swift_default_title()
+    assert main.VERSION                                  # a checkout has a VERSION file
+    assert main.WINDOW_TITLE == f"{before_version}{main.VERSION}"
