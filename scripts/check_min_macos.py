@@ -106,7 +106,7 @@ def executable_minimum(app: Path) -> tuple[Path, str | None] | None:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+        print("usage: scripts/check_min_macos.py <app bundle>, e.g. dist/agent-farm.app", file=sys.stderr)
         return 2
     app = Path(argv[1])
     try:

@@ -113,6 +113,11 @@ def test_the_build_goes_on_when_they_agree(tmp_path, monkeypatch, capsys):
     assert "the app's executable records the same minimum" in capsys.readouterr().out
 
 
+def test_the_wrong_arguments_print_how_to_run_it(capsys):
+    assert check_min_macos.main(["check"]) == 2
+    assert capsys.readouterr().err.startswith("usage: scripts/check_min_macos.py <app bundle>")
+
+
 def test_every_mach_o_header_is_recognized_and_nothing_else(tmp_path):
     heads = {"thin64": b"\xcf\xfa\xed\xfe", "thin32": b"\xce\xfa\xed\xfe", "fat": b"\xca\xfe\xba\xbe",
              "fat64": b"\xca\xfe\xba\xbf", "fat64-swapped": b"\xbf\xba\xfe\xca", "text": b"#!/b"}
