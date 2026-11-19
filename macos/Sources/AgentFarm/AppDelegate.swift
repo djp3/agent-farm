@@ -93,6 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
     /// main.WINDOW_TITLE, which tests/test_window_title.py checks against this line.
     private let defaultTitle = AppDelegate.version.map { "🌾 agent-farm v\($0)" } ?? "🌾 agent-farm"
     private var window: NSWindow!
+    /// Draws the window's title in the middle of its bar. Held as long as the window: it
+    /// watches window.title, and dropping it would stop the bar following the title.
+    private var centeredTitle: CenteredTitle?
     private var terminal: LocalProcessTerminalView!
     private var updater: SPUStandardUpdaterController?
     private var coreRunning = false
@@ -146,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = defaultTitle
+        centeredTitle = CenteredTitle(in: w)     // built for macOS 27, the system's title sits at the left
         w.minSize = NSSize(width: 520, height: 260)
         w.tabbingMode = .disallowed
         w.backgroundColor = Theme.background
