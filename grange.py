@@ -51,9 +51,9 @@ def check(pattern: str) -> str | None:
         return f"longer than {PATTERN_MAX} characters"
     try:
         re.compile(pattern)
-    except re.error as e:
-        return str(e)               # "missing ), unterminated subpattern at position 0"
-    return None
+    except Exception as e:          # usually re.error ("missing ), unterminated subpattern at
+        return str(e)               # position 0"); OverflowError for a{9999999999}; whatever it
+    return None                     # is, the pattern can't be used and typing it mustn't crash
 
 
 def clean(entries: object) -> list[dict]:

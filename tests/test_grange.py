@@ -29,6 +29,10 @@ def test_check_names_what_is_wrong_with_a_pattern():
     assert grange.check("") == "empty"
     assert grange.check("   ") == "empty"
     assert "200" in grange.check("a" * 201)
+    for huge in ("a{9999999999}", "a{1,9999999999}", "a{4294967296}"):    # OverflowError, not re.error
+        assert "too large" in grange.check(huge)
+        assert grange.samples(huge) == []
+        assert not grange.reported("aaa", [{"pattern": huge, "enabled": True}])
 
 
 def test_a_session_is_reported_when_a_pattern_that_is_on_matches_its_name():
@@ -255,6 +259,13 @@ def test_an_invalid_or_repeated_pattern_is_not_added(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert "not added" in str(app.screen.query_one("#grange-preview").render())
         assert box.value == "(oops"                  # left to fix
+        box.value = "a{9999999999}"                  # an overflow, not the usual pattern error
+        await pilot.pause(0.1)
+        assert "too large" in str(app.screen.query_one("#grange-preview").render())
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert "not added" in str(app.screen.query_one("#grange-preview").render())
+        assert app.is_running and isinstance(app.screen, main.SettingsScreen)
         box.value = "^wip"
         await pilot.press("enter")
         await pilot.pause(0.1)
