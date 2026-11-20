@@ -41,7 +41,9 @@ going next, and one click (or `k`) gives any of them another 30 days before purg
 No hooks, no plugins, no changes to your Claude Code setup. agent-farm reads the files Claude
 Code already writes, checks the process list, and listens to iTerm2 over one quiet connection. It sends none of your work anywhere: its only
 network traffic is a daily update check with GitHub and, if you turn plan limits on, the same
-usage and credit balance requests Claude Code makes. Apart from its own settings and log, the only thing it ever
+usage and credit balance requests Claude Code makes. If you turn on reporting to
+agent-grange, the names and states of the sessions you pick go to the agent-grange on your
+own Mac, which shares them with your team. Apart from its own settings and log, the only thing it ever
 changes is a session's file modification times, when you press keep.
 
 ## Install
@@ -118,6 +120,7 @@ you.
 | p | show / hide the project graph (with both graphs hidden the right column closes) |
 | m | cycle the usage measure: estimated limit use, output tokens, input tokens incl. cache, API messages |
 | s | settings (esc returns) |
+| g | report to agent-grange on / off (see Settings) |
 | r | refresh now |
 | q | quit |
 | ctrl+p | Textual's command palette: theme, key help, a screenshot saved to Downloads |
@@ -268,13 +271,27 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
   Code sign-in. See the usage panel section for what that involves.
 - **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
 - **Ordering**: attention, activity, started or name.
-- **Report to agent-grange**: which sessions to share with your team through agent-grange,
-  as a list of regular expressions (Python's syntax), each with its own on/off button. A
-  session is reported when its name matches a pattern that is on, anywhere in the name
-  unless the pattern is anchored with `^` or `$`; with no patterns, nothing is reported.
-  Under each pattern, and under the one you are typing, are a few names it matches, drawn
-  from the pattern itself, so `proj-\d+-pr-\d+` shows names like `proj-5-pr-13`. Nothing
-  is sent to agent-grange yet; this only keeps the list.
+- **Report to agent-grange** (off; `g` turns it on and off from anywhere): shares the
+  sessions you pick with your team through [agent-grange](https://github.com/djp3/agent-grange),
+  which runs on your Mac and passes them on to your teammates' boards. Three things go for
+  each session: its name, its state (busy, waiting, idle, shell, dead or unknown) and your
+  GitHub login as its owner. Nothing from transcripts, no folders, no times. agent-farm
+  sends the whole list whenever it changes and every 20 seconds besides. Turning reporting
+  off sends an empty list, so your sessions leave the boards at once. If agent-farm quits
+  instead, the grange keeps them listed, flagged stale.
+  - **Your GitHub login**: the one `gh` is signed in with on github.com, or the one you type
+    (Enter saves it). With neither, nothing is sent.
+  - **Which sessions**: a list of regular expressions (Python's syntax), each with its own
+    on/off button. A session is sent when its name matches a pattern that is on, anywhere in
+    the name unless the pattern is anchored with `^` or `$`; with no patterns, the list is
+    empty. A session without a name is never sent. Under each pattern, and under the one you are typing, are a few names it matches,
+    drawn from the pattern itself, so `proj-\d+-pr-\d+` shows names like `proj-5-pr-13`.
+  - **How it is going**, under the switch and in the fleet line's tooltip: how many sessions
+    the grange accepted and when, or that no agent-grange is running (`make up` in
+    agent-grange starts it), or that it is out of date until `make update`. agent-farm
+    keeps trying every 20 seconds either way.
+
+  The grange's port is `grange_port` in the settings file: 7788, agent-grange's default.
 
 **Monitor ▸ Reveal Settings File** shows the JSON file behind the panel (until you change a
 setting or drag the divider there is no file yet, and it opens the folder instead); the name
@@ -440,6 +457,10 @@ Which tab owns which terminal comes from iTerm2's Python API over one connection
 iTerm2 is running (agent-farm never starts it): iTerm2 hands out one pass for it, through
 AppleScript, and then announces every tab that opens, closes or moves. agent-farm re-reads
 the tabs then and once a minute, and brings a tab forward over the same connection.
+
+With reporting on, each snapshot's matching sessions go to agent-grange as one `PUT` to
+`http://127.0.0.1:7788/v1/farm`, with a body of `{"agents": [{"owner", "name", "state"}, …]}`.
+The request never leaves the Mac. agent-grange carries the list to the rest of the team.
 
 The app is a Python program (Textual) running inside a native window; see
 [DEVELOPMENT.md](DEVELOPMENT.md) to run it from source, build the app or cut a release.

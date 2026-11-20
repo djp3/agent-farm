@@ -36,6 +36,9 @@ class Settings:
     # Sessions reported to agent-grange: those whose name a pattern that is on matches.
     # Each entry is {"pattern": a Python regular expression, "enabled": bool}; see grange.py.
     grange_patterns: list = field(default_factory=list)
+    grange_report: bool = False         # push them to the grange on this Mac (g turns it on and off)
+    grange_owner: str = ""              # the GitHub login sent as their owner; "" uses gh's sign-in
+    grange_port: int = grange.DEFAULT_PORT   # GRANGE_PORT in the grange's .env (edit here; not in the panel)
 
     @classmethod
     def path(cls) -> Path:
@@ -70,6 +73,12 @@ class Settings:
             if f.name in data and isinstance(data[f.name], type(getattr(s, f.name))):
                 setattr(s, f.name, data[f.name])
         s.grange_patterns = grange.clean(s.grange_patterns)
+        if s.grange_owner and not grange.LOGIN.fullmatch(s.grange_owner):
+            log.warning("grange_owner in %s is not a GitHub login; using gh's sign-in", p.name)
+            s.grange_owner = ""
+        if isinstance(s.grange_port, bool) or not 0 < s.grange_port < 65536:
+            log.warning("grange_port in %s is not a port; using %d", p.name, grange.DEFAULT_PORT)
+            s.grange_port = grange.DEFAULT_PORT
         return s
 
     def save(self) -> None:

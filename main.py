@@ -528,7 +528,7 @@ def fleet_line(instances: list[Instance], show_text: bool,
 
 
 def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: int, it2_ok: bool,
-                  heart_words: str = "") -> str:
+                  heart_words: str = "", grange_words: str = "") -> str:
     """Everything the fleet line encodes, plus the active ordering, as words (on hover)."""
     live = [i for i in instances if i.alive]
     counts = {st: sum(1 for i in live if i.status == st) for st in ("waiting", "busy", "shell", "idle")}
@@ -555,6 +555,8 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     lines.append(f"ordering: {ordering.name} — {ordering.description}")
     if heart_words:
         lines.append(heart_words)
+    if grange_words:
+        lines.append(f"agent-grange: {grange_words}")
     if not it2_ok:
         lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
     if error_count:
@@ -1549,6 +1551,8 @@ class SettingsScreen(Screen):
     #settings .grange-row RadioButton { width: 1fr; }
     #grange-add-row { height: 3; margin-top: 1; }
     #grange-add-row Input { width: 1fr; }
+    #settings #grange-owner { width: 26; }
+    #settings #grange-status { margin-bottom: 1; }
     """
 
     PREVIEW_HINT = Text("What a new pattern matches shows here as you type it.", style="dim")
@@ -1557,6 +1561,7 @@ class SettingsScreen(Screen):
         super().__init__()
         self.settings = settings
         self.on_change = on_change
+        self._owner_note: Text | None = None
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="settings-scroll"), Vertical(id="settings"):
@@ -1585,9 +1590,19 @@ class SettingsScreen(Screen):
             with RadioSet(id="ordering"):
                 for o in ORDERINGS:
                     yield RadioButton(f"{o.name}  —  {o.description}", value=(o.name == self.settings.ordering))
-            yield Static("Report to agent-grange  (a session is reported when its name matches a pattern "
-                         "that is on; a pattern matches anywhere in the name unless anchored with ^ or $)",
-                         classes="section")
+            yield Static("Report to agent-grange", classes="section")
+            with Horizontal(classes="row"):
+                yield Label("Send the sessions below to agent-grange on this Mac  (g turns it on and off)")
+                yield Switch(value=self.settings.grange_report, id="grange_report")
+            with Horizontal(classes="row"):
+                yield Label("Your GitHub login, sent as their owner  (Enter saves it)")
+                gh = getattr(self.app, "_gh_login", "")
+                yield Input(value=self.settings.grange_owner, max_length=39, id="grange-owner",
+                            placeholder=f"{gh}, from gh" if gh else "your GitHub login")
+            yield Static("", id="grange-status")
+            yield Static("Only each session's name and state leave this Mac, with your login as their owner. "
+                         "A session is sent when its name matches a pattern that is on; a pattern matches "
+                         "anywhere in the name unless anchored with ^ or $.")
             yield Vertical(*self._pattern_rows(), id="grange-list")
             with Horizontal(id="grange-add-row"):
                 yield Input(placeholder="Add a pattern (a Python regular expression); Enter adds it",
@@ -1597,6 +1612,39 @@ class SettingsScreen(Screen):
             yield Static(f"Saved to {Settings.path().name} as you change them · esc returns to the monitor",
                          classes="hint")
         yield Footer()
+
+    def on_mount(self) -> None:
+        self._show_grange_status()
+        self.set_interval(1.0, self._show_grange_status)     # "accepted 4 s ago" moves with the clock
+
+    def _show_grange_status(self) -> None:
+        """How reporting is going, or why the login typed wasn't saved until it is changed."""
+        try:
+            line = self.query_one("#grange-status", Static)
+        except NoMatches:                      # closing: esc left the login field mid-edit
+            return
+        words = getattr(self.app, "grange_words", None)
+        line.update(self._owner_note or Text(words() if words else "", style="dim"))
+
+    def _commit_owner(self) -> None:
+        """The login field's value becomes the owner once Enter or leaving the field says it is
+        done, never while it is typed: a half-typed login would reach the boards."""
+        try:
+            login = self.query_one("#grange-owner", Input).value.strip()
+        except NoMatches:                      # closing
+            return
+        self._owner_note = None
+        if login and not grange.LOGIN.fullmatch(login):
+            self._owner_note = Text(f"{login!r} is not a GitHub login (letters, digits and single "
+                                    "hyphens, at most 39), so it was not saved.", style=RED)
+        elif login != self.settings.grange_owner:
+            self.settings.grange_owner = login
+            self._changed()
+        self._show_grange_status()
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        if event.input.id == "grange-owner":
+            self._commit_owner()
 
     def _pattern_rows(self) -> list[Widget]:
         """One row per pattern, its on/off button first, with strings it matches beneath."""
@@ -1616,6 +1664,9 @@ class SettingsScreen(Screen):
         await box.mount_all(self._pattern_rows())
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "grange-owner" and self._owner_note is not None:
+            self._owner_note = None                # being fixed
+            self._show_grange_status()
         if event.input.id == "grange-new":
             preview = self.query_one("#grange-preview", SampleLine)
             preview.show(event.value) if event.value else preview.show(note=self.PREVIEW_HINT)
@@ -1623,6 +1674,8 @@ class SettingsScreen(Screen):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "grange-new":
             await self._add_pattern()
+        elif event.input.id == "grange-owner":
+            self._commit_owner()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
@@ -1666,7 +1719,10 @@ class SettingsScreen(Screen):
             self.settings.show_limits = event.value
         elif event.switch.id == "show_expiring":
             self.settings.show_expiring = event.value
+        elif event.switch.id == "grange_report":
+            self.settings.grange_report = event.value
         self._changed()
+        self._show_grange_status()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         self.settings.ordering = ORDERINGS[event.index].name
@@ -1770,6 +1826,7 @@ class AgentFarm(App):
         Binding("p", "toggle_projects", "Projects"),
         Binding("m", "cycle_metric", "Metric", show=False),   # documented in the usage panel itself
         Binding("s", "settings", "Settings"),
+        Binding("g", "toggle_grange", "Grange"),
         Binding("r", "refresh_now", "Refresh"),
     ]
 
@@ -1788,6 +1845,8 @@ class AgentFarm(App):
         self.usage = UsageScanner()
         self.expiry = ExpiryScanner()
         self.limits = PlanLimits()
+        self.grange = grange.Reporter()           # when to push to agent-grange; see _grange_tick
+        self._gh_login = grange.gh_login()        # the owner when the settings name none
         self.usage_metric = 0
         # The usage graph shows when the setting or --usage says so, and `u` toggles it. The
         # project graph follows its setting and `p`. With both off the column collapses.
@@ -2313,6 +2372,7 @@ class AgentFarm(App):
         instances = self.ordering.sort(instances)
         self.instances = instances
         self.last_snapshot_at = now
+        self._grange_tick()                         # before the tree: it pushes under the settings too
         try:
             tree = self.query_one("#tree", Tree)
         except NoMatches:          # a snapshot landed after the screen was torn down
@@ -2357,7 +2417,8 @@ class AgentFarm(App):
         heart = iterm_heart(it.state, time.monotonic() - it.beat_at) if it.state != "unavailable" else None
         words = iterm_heart_words(it.state, it.connected_at, len(it.by_tty), time.time())
         self._set_status(fleet_line(instances, self.settings.show_status_text, recent, it.available, heart),
-                         fleet_tooltip(instances, self.ordering, recent, it.available, words))
+                         fleet_tooltip(instances, self.ordering, recent, it.available, words,
+                                       self.grange_words() if self.settings.grange_report else ""))
         self._set_window_title(window_title(instances))
         self._limits_on_snapshot(instances)
         self._refresh_detail()
@@ -2409,9 +2470,62 @@ class AgentFarm(App):
                 pass
         self.render_usage()                    # the plan-limits block follows its setting at once
         self._tick_limits(force=True)
+        self._gh_login = grange.gh_login()     # signed in to gh since launch, say
+        self._grange_tick()                    # turned off, the boards drop these sessions now
         self.scan_expiring()                   # the pane shows on return with a fresh list
         # Labels are rebuilt from the current instances on the main screen's next apply.
         self.call_later(lambda: self.apply_snapshot(list(self.instances)) if self.instances else None)
+
+    def action_toggle_grange(self) -> None:
+        """g: reporting to agent-grange on or off, saved like any setting."""
+        on = not self.settings.grange_report
+        if isinstance(self.screen, SettingsScreen):           # its switch follows, and saves
+            self.screen.query_one("#grange_report", Switch).value = on
+            return
+        self.settings.grange_report = on
+        self.settings.save()
+        log.info("reporting to agent-grange turned %s with g", "on" if on else "off")
+        self._grange_tick()
+        if not on:
+            self.notify("Stopped reporting to agent-grange.", timeout=4)
+        elif not self.grange_owner():
+            self.notify("Reporting to agent-grange is on, but nothing is sent until there is a GitHub "
+                        "login to send as the owner (s for Settings).", markup=False, timeout=8)
+        elif not (n := grange.report(self.instances, self.settings.grange_patterns, self.grange_owner())[1]):
+            self.notify("Reporting to agent-grange, but no session matches a pattern that is on "
+                        "(s for Settings).", markup=False, timeout=8)
+        else:
+            self.notify(f"Reporting {n} session{'' if n == 1 else 's'} to agent-grange.", timeout=4)
+
+    def grange_owner(self) -> str:
+        return self.settings.grange_owner or self._gh_login
+
+    def grange_words(self) -> str:
+        s = self.settings
+        return self.grange.words(s.grange_report, self.grange_owner(), s.grange_port, time.monotonic())
+
+    def _grange_tick(self) -> None:
+        """Push to agent-grange when one is due (grange.Reporter says when); with every snapshot."""
+        s, owner = self.settings, self.grange_owner()
+        agents, matched = (grange.report(self.instances, s.grange_patterns, owner)
+                           if s.grange_report and owner else (None, 0))
+        push = self.grange.next_push(agents, time.monotonic(), matched)
+        if push is not None:
+            self.push_grange(s.grange_port, push)
+
+    @work(thread=True, group="grange")
+    def push_grange(self, port: int, agents: list[dict]) -> None:
+        try:
+            reply = grange.put_farm(port, agents)
+        except Exception as e:             # put_farm answers rather than raises; this is a bug
+            log.exception("push to agent-grange failed")
+            reply = grange.Reply(None, type(e).__name__)
+        self._on_ui(self._grange_done, reply, port)
+
+    def _grange_done(self, reply: grange.Reply, port: int) -> None:
+        self.grange.done(reply, time.monotonic(), port)
+        if isinstance(self.screen, SettingsScreen):           # its status line says so at once
+            self.screen._show_grange_status()
 
     def action_toggle_detail(self) -> None:
         detail = self.query_one("#detail")

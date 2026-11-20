@@ -18,7 +18,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 | `limits.py` | plan limits (the `/usage` windows) from Anthropic's OAuth usage endpoint, with the Claude Code sign-in from the Keychain; reads both reply shapes (the `limits` rows and the older keys); opt-in, via system `curl` |
 | `ordering.py` | the orderings; an `Ordering` is a tuple of `Tier`s, each with a `match` predicate and a sort `key`; add one and append it to `ORDERINGS` |
 | `settings.py` | persisted settings; a new setting is a dataclass field with a default |
-| `grange.py` | which sessions are reported to agent-grange: the patterns from the settings, `reported(name, patterns)`, and `samples(pattern)`, which draws strings a pattern matches from Python's own parse of it |
+| `grange.py` | reporting to agent-grange: which sessions go (the patterns from the settings, `reported(name, patterns)`, and `samples(pattern)`, which draws strings a pattern matches from Python's own parse of it), `report()` for the entries, `Reporter` for when a push is due, and `put_farm()`, the `PUT /v1/farm` to the grange on this Mac. The contract is agent-grange's `docs/requirements.md`, sections 4.1 and 5.1 |
 | `apppaths.py` | where logs and settings live: next to the code from a checkout, under `~/Library` in the app |
 | `supervisor.py`, `supervisor.sh` | development runner that restarts `main.py` when a `.py` file changes |
 | `macos/` | the SwiftPM package for the host app (`Package.swift`, `Sources/AgentFarm`, `Info.plist`) |
