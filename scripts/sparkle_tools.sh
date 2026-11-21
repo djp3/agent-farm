@@ -69,7 +69,7 @@ if [ -z "$DIR" ]; then
 fi
 # SwiftPM keeps its own note of what it has downloaded. With that folder deleted by hand it
 # still believes the tools are there, and resolving brings nothing back.
-[ -n "$DIR" ] || { echo "SwiftPM resolved the packages and left no Sparkle tools under macos/.build/artifacts. Delete macos/.build (all of it: it is only a cache) and run this again" >&2; exit 1; }
+[ -n "$DIR" ] || { echo "SwiftPM resolved the packages and left no Sparkle tools under macos/.build/artifacts. Delete macos/.build (all of it: it is only a cache), or run 'swift package reset' in macos/, and run this again" >&2; exit 1; }
 
 for tool in $TOOLS; do
     WANT=$(pinned_sha256 "$VER" "$tool")
