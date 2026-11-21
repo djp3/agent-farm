@@ -81,7 +81,9 @@ echo "identity: ${IDENTITY_NAME:-$IDENTITY} ($IDENTITY)"
 echo "sparkle tools: $TOOLS"
 # The key is not used until the appcast is written, after the build and the notary. Look at
 # it now: a missing key, or one that is not the app's, should not cost a whole run to find.
-SPARKLE_ACCOUNT="$SPARKLE_ACCOUNT" scripts/check_sparkle_key.sh "$TOOLS" || die "the Sparkle key is not usable; nothing was built"
+# It is asked about the very key the appcast will be signed with, by the arguments that name
+# it: which key is decided once, above.
+scripts/check_sparkle_key.sh "$TOOLS" "${SPARKLE_KEY_ARGS[@]}" || die "the Sparkle key is not usable; nothing was built"
 
 step "build"
 # WITH_UPDATES=1: this copy is the one that is to update itself.
