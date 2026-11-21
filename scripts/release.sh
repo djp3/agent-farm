@@ -6,8 +6,9 @@
 # Reads VERSION, builds dist/agent-farm.app signed with a Developer ID, notarizes and
 # staples it, zips it, writes a Sparkle appcast signed with the agent-farm EdDSA key,
 # tags v<VERSION>, and creates the GitHub release with the zip and appcast.xml attached.
-# The notes in release-notes/<VERSION>.md go into the appcast, where Sparkle's update
-# window shows them, and onto the GitHub release.
+# The key signs twice: the zip, and the appcast itself, which the app takes only when signed
+# (SURequireSignedFeed in macos/Info.plist). The notes in release-notes/<VERSION>.md go into
+# the appcast, where Sparkle's update window shows them, and onto the GitHub release.
 # Installed apps poll https://github.com/djp3/agent-farm/releases/latest/download/appcast.xml,
 # so creating the release is what ships the update.
 #
@@ -87,16 +88,21 @@ rm -rf dist/appcast "$ZIP"
 mkdir -p dist/appcast
 ditto -c -k --keepParent "$APP" "$ZIP"
 cp "$ZIP" dist/appcast/
-# generate_appcast pairs notes with the archive whose name they share, and embeds them so the
-# signed appcast carries them; nothing else needs hosting.
+# generate_appcast pairs notes with the archive whose name they share, and embeds them, so
+# the appcast's own signature covers them and nothing else needs hosting.
 cp "$NOTES" "dist/appcast/$(basename "$ZIP" .zip).md"
 "$TOOLS/bin/generate_appcast" "${SPARKLE_KEY_ARGS[@]}" \
     --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
     --link "https://github.com/$REPO/releases" \
     --embed-release-notes \
     -o dist/appcast/appcast.xml dist/appcast
-grep -q "sparkle:edSignature" dist/appcast/appcast.xml || die "appcast.xml carries no EdDSA signature"
-grep -q '<description sparkle:format="markdown">' dist/appcast/appcast.xml || die "appcast.xml carries no release notes"
+# Two signatures, and neither is taken on trust. The zip's is in its enclosure. The feed's own
+# covers the rest (which version, which macOS, the notes), and generate_appcast leaves it out
+# when the app does not ask for a signed feed, and both out when the key is not the app's. A
+# search for "edSignature" finds the first and says nothing of the second.
+scripts/check_appcast.py dist/appcast/appcast.xml || die "appcast.xml is not signed as the app requires"
+"$TOOLS/bin/sign_update" --verify "${SPARKLE_KEY_ARGS[@]}" dist/appcast/appcast.xml >/dev/null \
+    || die "the signature on appcast.xml does not verify with the key it was just signed with"
 { cat "$NOTES"; printf '%s\n' "$NOTES_SUFFIX"; } > dist/release-notes.md
 
 step "publish $TAG"
