@@ -48,6 +48,43 @@ def test_turning_reporting_off_ends_the_span_at_once():
     assert not h.stopped(T0 + 6)                          # nothing running: nothing to end
 
 
+@pytest.mark.parametrize("kind", ["accepted", "refused"])
+def test_reporting_turned_back_on_soon_after_starts_a_new_span(kind):
+    """Off at 5 s and on again at 10 s: the five seconds between were not reporting, whether
+    the next answer is the same as the last or not."""
+    h = grange.History(None)
+    h.answered(T0, "accepted")
+    h.stopped(T0 + 5)
+    assert h.answered(T0 + 10, kind)
+    assert h.spans == [[T0, T0 + 5, "accepted"], [T0 + 10, T0 + 10 + H, kind]]
+    assert not h.closed
+
+
+def test_a_span_that_ran_out_a_moment_before_reporting_was_turned_off_is_closed_too():
+    """A heartbeat can come a second late, and the span runs out in between."""
+    h = grange.History(None)
+    h.answered(T0, "accepted")
+    assert h.stopped(T0 + H + 0.5) and h.spans == [[T0, T0 + H, "accepted"]]
+    h.answered(T0 + H + 3, "accepted")
+    assert len(h.spans) == 2
+
+
+def test_turned_off_is_remembered_across_a_restart_and_a_restart_alone_is_no_gap(tmp_path):
+    p = tmp_path / "grange-history.json"
+    now = time.time()
+    h = grange.History(p)
+    h.answered(now - 60, "accepted")
+    h.stopped(now - 55)
+    assert json.loads(p.read_text())["closed"] is True
+    again = grange.History(p)                            # the monitor restarted, reporting turned on
+    again.answered(now - 50, "accepted")
+    assert len(again.spans) == 2
+    again.flush()
+    after = grange.History(p)                            # restarted while reporting: one span carries on
+    after.answered(now - 50 + H + 5, "accepted")
+    assert len(after.spans) == 2 and after.spans[-1][1] == now - 50 + 2 * H + 5
+
+
 def test_a_day_is_kept_in_a_file_with_only_times_and_answers(tmp_path):
     p = tmp_path / "grange-history.json"
     now = time.time()
@@ -56,7 +93,7 @@ def test_a_day_is_kept_in_a_file_with_only_times_and_answers(tmp_path):
     h.answered(now - 3600, "accepted")
     h.answered(now - 3600 + H, "refused")
     data = json.loads(p.read_text())
-    assert list(data) == ["spans"]
+    assert sorted(data) == ["closed", "spans"] and data["closed"] is False
     assert all(len(sp) == 3 and isinstance(sp[0], int) and isinstance(sp[1], int) for sp in data["spans"])
     assert [sp[2] for sp in data["spans"]] == ["accepted", "refused"]
     assert [sp[2] for sp in grange.History(p).spans] == ["accepted", "refused"]
