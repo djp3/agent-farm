@@ -231,6 +231,35 @@ def test_a_grange_that_never_answers_is_given_up_on(monkeypatch):
 A = [{"owner": "o", "name": "proj-1", "state": "busy"}, {"owner": "o", "name": "proj-2", "state": "idle"}]
 
 
+def test_a_grange_that_answers_a_byte_at_a_time_is_given_up_on_in_the_time_for_one_push(monkeypatch):
+    monkeypatch.setattr(grange, "TIMEOUT_S", 0.3)
+    srv = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def drip():
+        c, _ = srv.accept()
+        c.recv(65536)
+        try:
+            for ch in b"HTTP/1.1 204 No Content\r\nX-Slow: " + b"a" * 50 + b"\r\n\r\n":
+                if stop.wait(0.05):     # each byte well inside the timeout for one wait
+                    break
+                c.sendall(bytes([ch]))
+        except OSError:
+            pass                        # the push hung up on it
+        c.close()
+
+    t = threading.Thread(target=drip, daemon=True)
+    t.start()
+    began = time.monotonic()
+    reply = REAL_PUT(srv.getsockname()[1], [])
+    took = time.monotonic() - began
+    stop.set()
+    t.join(5)
+    srv.close()
+    assert reply == grange.Reply(None, "no answer in 0.3 s")
+    assert took < 1.0                   # the whole answer would take over 3 s
+
+
 def test_a_push_goes_on_a_change_and_on_the_heartbeat_but_not_for_a_new_order():
     r = grange.Reporter()
     assert r.next_push(A, 0.0) == A

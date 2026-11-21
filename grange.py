@@ -35,6 +35,7 @@ import os
 import random
 import re
 import signal
+import socket
 import string
 import threading
 import time
@@ -58,7 +59,7 @@ DECIDED_MAX = 4096      # remembered (pattern, name) answers; past it they are a
 HOST = "127.0.0.1"      # the grange listens on loopback only
 DEFAULT_PORT = 7788     # GRANGE_PORT in the grange's .env
 HEARTBEAT_S = 20.0      # the grange asks for a push at least every 30 s and calls 60 s stale
-TIMEOUT_S = 3.0         # for one push: connecting, sending and the answer
+TIMEOUT_S = 3.0         # for one push in all: connecting, sending and the whole answer
 FIELD_MAX = 256         # bytes in each string the grange accepts
 AGENTS_MAX = 200        # entries in one push
 REPLY_MAX = 64 * 1024   # bytes of an answer read, for its {"error": ...}
@@ -261,22 +262,44 @@ def put_farm(port: int, agents: list[dict]) -> Reply:
     """Send the list to the grange on this Mac and say how it went. Never raises: a grange that
     isn't running, is out of date or refuses the list is an answer like any other, and the
     next push goes on schedule. http.client rather than urllib, so no proxy setting can route
-    it anywhere else; a bytes body always goes with Content-Length, never chunked."""
+    it anywhere else; a bytes body always goes with Content-Length, never chunked.
+
+    TIMEOUT_S bounds the whole push, not just each wait: a timer shuts the connection down
+    when it runs out, which wakes a read that is blocked on it, so a grange that answers a
+    byte at a time can't hold the push (and so every push after it, one being out at a time)."""
     body = json.dumps({"agents": agents}, ensure_ascii=False, separators=(",", ":")).encode()
     conn = http.client.HTTPConnection(HOST, port, timeout=TIMEOUT_S)
+    late, lock = threading.Event(), threading.Lock()
+
+    def cut() -> None:
+        with lock:                      # never on a socket the finally below has closed
+            late.set()
+            if conn.sock is not None:
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    timer = threading.Timer(TIMEOUT_S, cut)
+    timer.daemon = True
+    timer.start()
     try:
         conn.request("PUT", "/v1/farm", body=body,
                      headers={"Content-Type": "application/json", "Connection": "close"})
+        if late.is_set():               # ran out while connecting, before there was a socket to cut
+            raise TimeoutError
         r = conn.getresponse()
         data = r.read(REPLY_MAX)
     except ConnectionRefusedError:
         return Reply(None, "not running")
-    except TimeoutError:
-        return Reply(None, f"no answer in {TIMEOUT_S:g} s")
     except (OSError, http.client.HTTPException, ValueError) as e:   # ValueError: a port out of range
+        if late.is_set() or isinstance(e, TimeoutError):
+            return Reply(None, f"no answer in {TIMEOUT_S:g} s")
         return Reply(None, getattr(e, "strerror", None) or type(e).__name__)
     finally:
-        conn.close()
+        with lock:
+            timer.cancel()
+            conn.close()
     if r.status == 204:
         return Reply(204)
     return Reply(r.status, _error_in(data) or r.reason or "")
