@@ -406,6 +406,14 @@ background command counts as running until Claude Code reports the command finis
 still going counts up to now while its shell is running, and for at most ten minutes once
 its shell is gone.
 
+**Reports to agent-grange.** Under agents at work, when anything was reported in the last
+24 hours: one mark per hour, under that hour's stalk. ● means reporting was on all that hour
+and ◐ part of it; a dim · means it was off. Green means the grange took the list, so the
+sessions were on the boards; yellow, that it was not running, out of date or did not
+answer; red, that it refused the list. Beside the marks, `now` is how many sessions the
+last list the grange took held, or why none went. Only the times and the grange's answers
+are kept for this, in `grange-history.json` beside the settings file, and only for a day.
+
 ## What the states mean
 
 - **busy** and **idle** come straight from Claude Code's own session registry.

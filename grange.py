@@ -63,6 +63,9 @@ TIMEOUT_S = 3.0         # for one push in all: connecting, sending and the whole
 FIELD_MAX = 256         # bytes in each string the grange accepts
 AGENTS_MAX = 200        # entries in one push
 REPLY_MAX = 64 * 1024   # bytes of an answer read, for its {"error": ...}
+KINDS = ("accepted", "out of date", "not running", "no answer", "refused")   # Reply.kind
+HISTORY_KEEP_S = 25 * 3600   # the chart's day, and an hour to spare
+HISTORY_SAVE_S = 60.0        # a span that only grows is saved at most this often
 # A GitHub login: letters, digits and single hyphens, not at either end, at most 39 characters.
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
 
@@ -387,6 +390,90 @@ class Reporter:
         if r.kind == "refused":
             return f"On, but the grange refused the list ({r.code}: {r.problem}). {again}"
         return f"On, but the push to port {port} failed ({r.problem}). {again}"
+
+
+class History:
+    """When reporting was on and how the grange answered, for the chart under agents at work:
+    spans [start, end, kind] in wall-clock seconds, kind being a Reply.kind. An answered push
+    covers the HEARTBEAT_S after it, when the next one is due. A push within two heartbeats
+    of the last continues its span when the answer is of the same kind, and ends it and starts
+    the next when not; a longer gap (the monitor quit, the Mac slept) starts a new one. Only
+    times and kinds are kept: no session names, no counts, no owner. The file is JSON beside
+    the settings, holding a day; None keeps it in memory only."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.spans: list[list] = []
+        self._saved_at = float("-inf")
+        self._unsaved = False
+        self._load()
+
+    def _load(self) -> None:
+        if self.path is None:
+            return
+        try:
+            data = json.loads(self.path.read_text())
+        except FileNotFoundError:
+            return
+        except Exception as e:               # a hand edit or a torn write: start afresh
+            log.warning("could not read %s: %r (starting a new history)", self.path.name, e)
+            return
+        spans = data.get("spans") if isinstance(data, dict) else None
+        for sp in spans if isinstance(spans, list) else []:
+            if (isinstance(sp, list) and len(sp) == 3 and sp[2] in KINDS
+                    and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in sp[:2])
+                    and sp[0] <= sp[1]):
+                self.spans.append([float(sp[0]), float(sp[1]), sp[2]])
+        self.spans.sort(key=lambda sp: sp[0])
+        self._prune(time.time())
+
+    def answered(self, now: float, kind: str) -> bool:
+        """A push made while reporting was on got this answer. True when a span began or ended,
+        which the chart shows; a span that only grows is left to its regular redraw."""
+        last = self.spans[-1] if self.spans else None
+        if last is not None and last[0] <= now <= last[1] + HEARTBEAT_S:
+            if last[2] == kind:
+                last[1] = now + HEARTBEAT_S
+                self._save(now)
+                return False
+            last[1] = now
+        self.spans.append([now, now + HEARTBEAT_S, kind])
+        self._prune(now)
+        self._save(now, force=True)
+        return True
+
+    def stopped(self, now: float) -> bool:
+        """Reporting is off, or nothing can be sent: the span still running ends now. True when
+        one did."""
+        last = self.spans[-1] if self.spans else None
+        if last is None or last[1] <= now:
+            return False
+        last[1] = max(last[0], now)
+        self._save(now, force=True)
+        return True
+
+    def flush(self) -> None:
+        """Save what the throttle held back; on quit."""
+        if self._unsaved:
+            self._save(time.time(), force=True)
+
+    def _prune(self, now: float) -> None:
+        self.spans = [sp for sp in self.spans if sp[1] > now - HISTORY_KEEP_S]
+
+    def _save(self, now: float, force: bool = False) -> None:
+        if self.path is None:
+            return
+        if not force and now - self._saved_at < HISTORY_SAVE_S:
+            self._unsaved = True
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"spans": [[round(a), round(b), k] for a, b, k in self.spans]}) + "\n")
+            os.replace(tmp, self.path)
+            self._saved_at, self._unsaved = now, False
+        except OSError as e:
+            log.warning("could not write %s: %r", self.path.name, e)
 
 
 class _GiveUp(Exception):

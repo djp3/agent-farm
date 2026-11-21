@@ -1029,6 +1029,29 @@ def _hour_label(ts: float) -> str:
     return f"{h % 12 or 12}{'a' if h < 12 else 'p'}"
 
 
+def _activity_scale(vals: list[float]) -> tuple[float, dict[int, str], int]:
+    """The chart's agents per row, its row labels, and the width of the gutter they take."""
+    unit = _activity_unit(max(vals, default=0.0), ACTIVITY_ROWS)
+    whole = [r for r in range(1, ACTIVITY_ROWS + 1) if (r * unit) % 1 == 0]
+    step = max(1, -(-len(whole) // 3))                     # at most three labels
+    labels = {r: f"{r * unit:g}" for r in whole[::-1][::step]}
+    return unit, labels, max((len(x) for x in labels.values()), default=1)
+
+
+def _hour_axis(starts: list[float], gut: int) -> Text:
+    """The axis under an hourly chart, a tick every six hours, and their labels."""
+    t = Text()
+    ticks = [k for k, a in enumerate(starts) if datetime.fromtimestamp(a).hour % 6 == 0]
+    t.append(" " * gut + "└" + "".join("┬" if k in ticks else "─" for k in range(len(starts))) + "\n",
+             style="dim")
+    under = [" "] * (len(starts) + 4)
+    for k, lab in [(k, _hour_label(starts[k])) for k in ticks] + [(len(starts) - 2, "now")]:
+        if k >= 0 and all(c == " " for c in under[max(0, k - 1):k + len(lab)]):
+            under[k:k + len(lab)] = lab
+    t.append(" " * (gut + 1) + "".join(under).rstrip() + "\n", style="dim")
+    return t
+
+
 def activity_text(bins: list[tuple[float, float]], width: int, now: float | None = None) -> Text:
     """Agents at work over the last day: a stalk per hour, oldest at the left and the current
     hour at the right, its height the agents running in that hour (sessions and subagents,
@@ -1043,12 +1066,8 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
     if peak <= 0:
         t.append("no agent has run in the last day\n" if bins else "", style="dim")
         return t
-    unit = _activity_unit(peak, ACTIVITY_ROWS)
+    unit, labels, gut = _activity_scale(vals)
     heights = [round(v / unit) for v in vals]
-    whole = [r for r in range(1, ACTIVITY_ROWS + 1) if (r * unit) % 1 == 0]
-    step = max(1, -(-len(whole) // 3))                     # at most three labels
-    labels = {r: f"{r * unit:g}" for r in whole[::-1][::step]}
-    gut = max((len(x) for x in labels.values()), default=1)
     peak_at = bins[vals.index(peak)][0]
     hours_total = sum(v * ((bins[k + 1][0] if k + 1 < len(bins) else now) - a) / 3600
                       for k, (a, v) in enumerate(bins))
@@ -1075,14 +1094,66 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
             t.append(f"   {k:<{side_w}} ", style="dim")
             t.append(val)
         t.append("\n")
-    ticks = [k for k, (a, _) in enumerate(bins) if datetime.fromtimestamp(a).hour % 6 == 0]
-    t.append(" " * gut + "└" + "".join("┬" if k in ticks else "─" for k in range(len(bins))) + "\n",
-             style="dim")
-    under = [" "] * (len(bins) + 4)
-    for k, lab in [(k, _hour_label(bins[k][0])) for k in ticks] + [(len(bins) - 2, "now")]:
-        if k >= 0 and all(c == " " for c in under[max(0, k - 1):k + len(lab)]):
-            under[k:k + len(lab)] = lab
-    t.append(" " * (gut + 1) + "".join(under).rstrip() + "\n", style="dim")
+    t.append_text(_hour_axis([a for a, _ in bins], gut))
+    return t
+
+
+# The reports-to-agent-grange band, under agents at work and hour for hour with its stalks:
+# a mark per hour when reporting was on in it, colored by how the grange answered for most of
+# that time (see grange.History). Shown only when something was reported in the last day.
+GRANGE_ROWS = 5                         # title, the band, axis, hour labels, blank
+GRANGE_FULL, GRANGE_PART, GRANGE_OFF = "●", "◐", "·"
+GRANGE_ON_FULL = 0.9                    # this share of an hour on counts as all of it
+GRANGE_LOOK = {"accepted": GREEN,                                            # on the boards
+               "out of date": YELLOW, "not running": YELLOW, "no answer": YELLOW,   # yours to fix
+               "refused": RED}
+_GRANGE_WORSE = {GREEN: 0, YELLOW: 1, RED: 2}
+GRANGE_TIP = ("Reports to agent-grange, one mark per hour, under that hour's stalk above. "
+              "● reporting was on all that hour, ◐ part of it, · off.\n"
+              "Green: the grange took the list, so the sessions were on the boards. "
+              "Yellow: the grange was not running, out of date (make update) or did not answer. "
+              "Red: it refused the list.\n"
+              "now: the sessions in the last list it took, or why it took none.")
+
+
+def grange_hours(spans: list[list], starts: list[float], now: float) -> list[tuple[float, str]]:
+    """For each hour from `starts`: the share of it reporting was on (of the part passed, for
+    the current hour) and the color of the answer that held longest in it, the worse on a
+    tie; (0.0, "") for an hour it was off."""
+    out = []
+    for k, a in enumerate(starts):
+        b = min(starts[k + 1] if k + 1 < len(starts) else now, now)
+        by: dict[str, float] = {}
+        for s, e, kind in spans:
+            o = min(e, b) - max(s, a)
+            if o > 0:
+                hue = GRANGE_LOOK.get(kind, RED)
+                by[hue] = by.get(hue, 0.0) + o
+        if not by or b <= a:
+            out.append((0.0, ""))
+            continue
+        out.append((min(1.0, sum(by.values()) / (b - a)), max(by, key=lambda h: (by[h], _GRANGE_WORSE[h]))))
+    return out
+
+
+def grange_text(hours: list[tuple[float, str]], starts: list[float], gut: int,
+                now_says: tuple[str, str], width: int) -> Text:
+    """The band: the title, a mark per hour after the same gutter as the chart above, the
+    `now` figure beside it when it fits, and the hour axis."""
+    t = Text()
+    t.append(f"reports to agent-grange · last {len(hours)} hours\n", style="dim")
+    t.append(" " * gut + "│", style="dim")
+    for on, hue in hours:
+        if on <= 0:
+            t.append(GRANGE_OFF, style=DARK_GRAY)
+        else:
+            t.append(GRANGE_FULL if on >= GRANGE_ON_FULL else GRANGE_PART, style=hue)
+    says, style = now_says
+    if gut + 1 + len(hours) + 3 + 4 + 1 + len(says) <= width:
+        t.append("   now  ", style="dim")
+        t.append(says, style=style)
+    t.append("\n")
+    t.append_text(_hour_axis(starts, gut))
     return t
 
 
@@ -1805,6 +1876,8 @@ class AgentFarm(App):
     /* The gutter stands in for the body's right padding, so a scrollbar never moves the text. */
     #charts { height: auto; }                   /* _line_up sets it so the usage graph meets the detail pane */
     #farm { padding: 0 1; }
+    #grange-chart { padding: 0 1; }
+    #grange-chart.hidden { display: none; }
     #projects { height: auto; padding: 0 1; border-top: solid $primary-darken-2; }
     #projects.hidden { display: none; }
     #usage-scroll { height: 1fr; border-top: solid $primary-darken-2;
@@ -1846,6 +1919,9 @@ class AgentFarm(App):
         self.expiry = ExpiryScanner()
         self.limits = PlanLimits()
         self.grange = grange.Reporter()           # when to push to agent-grange; see _grange_tick
+        # When reporting was on and how the grange answered, for the band under agents at work.
+        self.grange_history = grange.History(Settings.path().with_name("grange-history.json"))
+        self._farm_bins: list[tuple[float, float]] | None = None    # the hours agents at work last drew
         self._gh_login = grange.gh_login()        # the owner when the settings name none
         self.usage_metric = 0
         # The usage graph shows when the setting or --usage says so, and `u` toggles it. The
@@ -1898,6 +1974,10 @@ class AgentFarm(App):
                     farm = Static("", id="farm")
                     farm.styles.height = FARM_ROWS      # a fixed height: the graphs below never jump
                     yield farm
+                    band = Static("", id="grange-chart", classes="hidden")
+                    band.styles.height = GRANGE_ROWS
+                    band.tooltip = GRANGE_TIP
+                    yield band
                     yield Static("", id="projects")
                 with WheelScroll(id="usage-scroll"):
                     yield Static("", id="usage-body")
@@ -1941,6 +2021,7 @@ class AgentFarm(App):
 
     def exit(self, *args, **kwargs) -> None:
         self._set_window_title("")        # an iTerm2 tab gets its own title back
+        self.grange_history.flush()       # the last minute of the reports band
         super().exit(*args, **kwargs)
 
     def _panel_open(self) -> bool:
@@ -1993,6 +2074,8 @@ class AgentFarm(App):
         top = None
         if self.usage_forced and not detail.has_class("hidden"):
             need = FARM_ROWS + (projects.outer_size.height if self.projects_forced else 0)
+            if not self.query_one("#grange-chart").has_class("hidden"):
+                need += GRANGE_ROWS
             detail_h = max(DETAIL_MIN_ROWS, min(detail_h, h - above - need))
             top = h - detail_h - above
             if top < need:                             # too short even so: the charts keep their rows
@@ -2164,7 +2247,43 @@ class AgentFarm(App):
             return
         # A background command whose shell is still running keeps its agent at work up to now.
         live = {i.session_id: [s.started for s in i.shells] for i in self.instances if i.alive and i.shells}
-        farm.update(activity_text(self.usage.activity(live_shells=live), self._usage_text_width()))
+        self._farm_bins = self.usage.activity(live_shells=live)
+        farm.update(activity_text(self._farm_bins, self._usage_text_width()))
+        self.render_grange()
+
+    def render_grange(self) -> None:
+        """The reports-to-agent-grange band under agents at work, on the same hours; hidden
+        when nothing was reported in them."""
+        try:
+            band = self.query_one("#grange-chart", Static)
+        except NoMatches:
+            return
+        if self._farm_bins is None:
+            return
+        now = time.time()
+        starts = [a for a, _ in self._farm_bins]
+        hours = grange_hours(self.grange_history.spans, starts, now)
+        show = any(on > 0 for on, _ in hours)
+        if show:
+            _, _, gut = _activity_scale([v for _, v in self._farm_bins])
+            band.update(grange_text(hours, starts, gut, self._grange_now(), self._usage_text_width()))
+        if band.has_class("hidden") == show:
+            band.set_class(not show, "hidden")
+            self.call_after_refresh(self._line_up)     # the charts take its rows, or give them back
+
+    def _grange_now(self) -> tuple[str, str]:
+        """The band's `now`: the sessions in the last list the grange took, or why none went."""
+        r = self.grange.reply
+        if not self.settings.grange_report:
+            return "off", "dim"
+        if not self.grange_owner():
+            return "no login", YELLOW
+        if r is None:
+            return "sending…", "dim"
+        if r.kind == "accepted":
+            n = self.grange.count
+            return f"{n} session{'' if n == 1 else 's'}", ""
+        return r.kind, GRANGE_LOOK.get(r.kind, RED)
 
     def action_toggle_usage(self) -> None:
         self.usage_forced = not self.usage_forced
@@ -2509,21 +2628,28 @@ class AgentFarm(App):
         s, owner = self.settings, self.grange_owner()
         agents, matched = (grange.report(self.instances, s.grange_patterns, owner)
                            if s.grange_report and owner else (None, 0))
+        if agents is None and self.grange_history.stopped(time.time()):
+            self.render_grange()
         push = self.grange.next_push(agents, time.monotonic(), matched)
         if push is not None:
-            self.push_grange(s.grange_port, push)
+            self.push_grange(s.grange_port, push, agents is not None)
 
     @work(thread=True, group="grange")
-    def push_grange(self, port: int, agents: list[dict]) -> None:
+    def push_grange(self, port: int, agents: list[dict], on: bool) -> None:
         try:
             reply = grange.put_farm(port, agents)
         except Exception as e:             # put_farm answers rather than raises; this is a bug
             log.exception("push to agent-grange failed")
             reply = grange.Reply(None, type(e).__name__)
-        self._on_ui(self._grange_done, reply, port)
+        self._on_ui(self._grange_done, reply, port, on)
 
-    def _grange_done(self, reply: grange.Reply, port: int) -> None:
+    def _grange_done(self, reply: grange.Reply, port: int, on: bool) -> None:
         self.grange.done(reply, time.monotonic(), port)
+        # The empty list that turning off sends is not reporting, nor is an answer that comes
+        # back after reporting was turned off.
+        if on and self.settings.grange_report:
+            self.grange_history.answered(time.time(), reply.kind)
+        self.render_grange()                       # a new mark, or the `now` beside them
         if isinstance(self.screen, SettingsScreen):           # its status line says so at once
             self.screen._show_grange_status()
 
