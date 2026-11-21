@@ -168,3 +168,36 @@ def test_without_the_rpath_it_needs_the_build_stops_and_says_where_it_looked(tmp
     done = _keep_one_rpath(exe)
     assert done.returncode == 1
     assert "must look for its frameworks in @executable_path/../Frameworks alone" in done.stderr
+
+
+
+def _swift_build_step() -> str:
+    """build_app.sh's own lines that run swift build, from SWIFT_LOG= to the grep after it."""
+    build = read("scripts", "build_app.sh").splitlines()
+    first = next(i for i, line in enumerate(build) if line.startswith("SWIFT_LOG="))
+    last = next(i for i, line in enumerate(build) if line.startswith('grep -E "warning: unre|Build complete"'))
+    return "\n".join(build[first:last + 1])
+
+
+def _build_with(tmp_path, swift: str):
+    import subprocess
+    (tmp_path / "macos").mkdir()
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "swift").write_text("#!/bin/sh\n" + swift)
+    (tmp_path / "bin" / "swift").chmod(0o755)
+    script = f"set -euo pipefail\ncd {tmp_path}\n{_swift_build_step()}\necho went-on\n"
+    return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True,
+                          env={"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin"})
+
+
+def test_a_build_that_worked_goes_on_whatever_it_printed(tmp_path):
+    """Piped into grep under pipefail, a build that printed nothing grep knew stopped the script."""
+    done = _build_with(tmp_path, "echo 'Compiling things'\nexit 0\n")
+    assert done.returncode == 0 and "went-on" in done.stdout, done.stderr
+    assert "Compiling things" in (tmp_path / "build" / "swift-build.log").read_text()
+
+
+def test_a_build_that_failed_stops_and_shows_all_it_said(tmp_path):
+    done = _build_with(tmp_path, "echo 'main.swift:3: something the search never looked for'\nexit 1\n")
+    assert done.returncode == 1 and "went-on" not in done.stdout
+    assert "something the search never looked for" in done.stderr and "swift build failed" in done.stderr

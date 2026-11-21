@@ -41,9 +41,19 @@ BIN=macos/.build/release/AgentFarm
 rm -f "$BIN"                                   # so an existing binary can only come from this build
 # Held to Package.resolved: left to itself SwiftPM moves a pin that the manifest has outgrown
 # and rewrites the file, mid-build, and the app would link a version no commit names.
-( cd macos && swift build --only-use-versions-from-resolved-file -c release --product AgentFarm 2>&1 \
-    | grep -E "error|warning: unre|Build complete"
-  [ "${PIPESTATUS[0]}" -eq 0 ] )              # keep the compiler's verdict, not grep's
+# The compiler's verdict decides, and not a search of what it printed: piped into grep under
+# pipefail, a build that worked but printed nothing the search knows would have stopped this
+# script without a word. So what it says goes to a log. If it fails, all of that is shown; if
+# not, the lines worth a glance, and a search that finds none is no failure.
+SWIFT_LOG=build/swift-build.log
+mkdir -p build
+if ! ( cd macos && swift build --only-use-versions-from-resolved-file -c release --product AgentFarm ) \
+        > "$SWIFT_LOG" 2>&1; then
+    cat "$SWIFT_LOG" >&2
+    echo "swift build failed: what it said is above, and in $SWIFT_LOG" >&2
+    exit 1
+fi
+grep -E "warning: unre|Build complete" "$SWIFT_LOG" || true
 [ -x "$BIN" ] || { echo "swift build did not produce $BIN" >&2; exit 1; }
 # -print -quit, not `| head -1`: under pipefail a find cut off by head fails the pipeline,
 # and the assignment would end the script with nothing said.
