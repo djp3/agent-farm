@@ -6,6 +6,8 @@
 #   4. check the minimum macOS (scripts/check_min_macos.py): stop if a binary needs more
 #      than Info.plist declares, or the Swift executable records a different minimum
 #   5. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
+# Only a release (WITH_UPDATES=1, which scripts/release.sh sets) carries the update feed: a
+# copy built by hand never looks for updates, so it never replaces itself with a release.
 # Needs: .venv with requirements.txt + requirements-build.txt, Xcode command line tools.
 # The version comes from VERSION and is used for both CFBundleShortVersionString and
 # CFBundleVersion (Sparkle compares the latter, dotted numbers compare naturally).
@@ -19,7 +21,9 @@ APP=dist/agent-farm.app
 # hash, since a renewed certificate can sit beside the old one under the same name), else
 # ad-hoc. macOS privacy grants (Files and Folders) are tied to the signing
 # identity, so local builds signed the same way as releases keep the user's permissions.
-IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $2; exit}')}
+# No awk here stops at its first match: under pipefail, a `security` cut off while it still
+# had lines to write fails the pipeline, and the assignment would end the script unheard.
+IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ && !n++ {print $2}')}
 IDENTITY=${IDENTITY:--}
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -35,10 +39,15 @@ fi
 step "host app: swift build"
 BIN=macos/.build/release/AgentFarm
 rm -f "$BIN"                                   # so an existing binary can only come from this build
-( cd macos && swift build -c release --product AgentFarm 2>&1 | grep -E "error|warning: unre|Build complete"
+# Held to Package.resolved: left to itself SwiftPM moves a pin that the manifest has outgrown
+# and rewrites the file, mid-build, and the app would link a version no commit names.
+( cd macos && swift build --only-use-versions-from-resolved-file -c release --product AgentFarm 2>&1 \
+    | grep -E "error|warning: unre|Build complete"
   [ "${PIPESTATUS[0]}" -eq 0 ] )              # keep the compiler's verdict, not grep's
 [ -x "$BIN" ] || { echo "swift build did not produce $BIN" >&2; exit 1; }
-SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "*macos-*" | head -1)
+# -print -quit, not `| head -1`: under pipefail a find cut off by head fails the pipeline,
+# and the assignment would end the script with nothing said.
+SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "*macos-*" -print -quit)
 [ -d "$SPARKLE_FW" ] || { echo "Sparkle.framework not found under macos/.build/artifacts" >&2; exit 1; }
 
 step "icon"
@@ -52,17 +61,47 @@ step "assemble $APP ($VERSION)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentFarm"
-# SwiftPM records an absolute rpath into .build for the Sparkle artifact; the app
-# only needs the @executable_path/../Frameworks one set in Package.swift.
-otool -l "$APP/Contents/MacOS/AgentFarm" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}' | while read -r rp; do
-    case "$rp" in /*) install_name_tool -delete_rpath "$rp" "$APP/Contents/MacOS/AgentFarm" 2>/dev/null || true ;; esac
-done
+# Where the app looks for Sparkle.framework. It needs one place, the one Package.swift sets:
+# its own Contents/Frameworks. SwiftPM adds @loader_path, beside the executable, where a
+# `swift run` finds the framework and the finished app has nothing; and it has been known to
+# record an absolute path into .build. Whatever else is there is taken out, and the build
+# stops if the one that matters is not: the app would not start.
+EXE="$APP/Contents/MacOS/AgentFarm"
+NEEDED="@executable_path/../Frameworks"
+# One path a line, each whole: otool prints "path <path> (offset <n>)", and a path can hold
+# spaces (a checkout in "My Checkout"), so not awk's $2.
+rpaths() { otool -l "$EXE" | awk '/LC_RPATH/{f=1} f && sub(/^[[:space:]]*path /, "") {sub(/ \(offset [0-9]+\)$/, ""); print; f=0}'; }
+FOUND=$(rpaths)             # read whole before any is taken out: the file changes under otool otherwise
+while IFS= read -r rp; do
+    [ -z "$rp" ] || [ "$rp" = "$NEEDED" ] || install_name_tool -delete_rpath "$rp" "$EXE"
+done <<< "$FOUND"
+[ "$(rpaths)" = "$NEEDED" ] || { echo "the app's executable must look for its frameworks in $NEEDED alone; it looks in:" >&2; rpaths | sed 's/^/    /' >&2; exit 1; }
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 cp -R dist/python/agent-farm-core "$APP/Contents/Resources/agent-farm-core"
 cp macos/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-emoji.txt"
+# Other people's programs inside the app come under licenses of their own. Those of the two
+# the Swift host links ask that their text go with every copy: Sparkle's (its framework is
+# carried whole) and SwiftTerm's (compiled into the executable). They are taken from the very
+# packages this copy was built from, so they are the licenses of the versions inside it, and
+# go beside the app's own: LICENSE-Sparkle, LICENSE-SwiftTerm. A build that cannot find one
+# stops here, before anything is signed.
+for package in Sparkle SwiftTerm; do
+    [ -s "macos/.build/checkouts/$package/LICENSE" ] \
+        || { echo "no license text for $package under macos/.build/checkouts" >&2; exit 1; }
+    cp "macos/.build/checkouts/$package/LICENSE" "$APP/Contents/Resources/LICENSE-$package"
+done
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
+if [ "${WITH_UPDATES:-0}" != 1 ]; then
+    # Only a release updates itself (WITH_UPDATES=1, which release.sh sets). A copy built here
+    # has the installed app's bundle id, and so its Sparkle preferences: with automatic
+    # installs on, it would be replaced by the published app as it quit. Without a feed the
+    # app starts no updater (AppDelegate.updatesItself) and Check for Updates stays grey.
+    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" -c "Delete :SUEnableAutomaticChecks" \
+        -c "Delete :SUScheduledCheckInterval" "$APP/Contents/Info.plist"
+    echo "no update feed in this copy: it is not a release (WITH_UPDATES=1 makes one that updates itself)"
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 step "minimum macOS"

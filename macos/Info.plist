@@ -40,7 +40,11 @@
 	<string>https://github.com/djp3/agent-farm/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>3hvOrrim4AUZMBgMbIcA2PN2UUvWwAxrnppwLo9b05w=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

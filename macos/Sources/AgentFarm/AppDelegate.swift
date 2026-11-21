@@ -135,12 +135,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Closing the monitor's window quits the app, whatever else is open. With one window that
+    /// was applicationShouldTerminateAfterLastWindowClosed's doing. Sparkle's update window is
+    /// a window too: with it open the app stayed in the Dock, with nothing left to show.
+    func windowWillClose(_ note: Notification) {
+        guard (note.object as? NSWindow) === window else { return }
+        DispatchQueue.main.async { NSApp.terminate(nil) }
+    }
+
     func applicationWillTerminate(_ note: Notification) {
         if coreRunning { terminal.terminate() }
     }
 
+    /// Only a copy that carries a feed updates itself, and only a release does. A `swift run`
+    /// has no Info.plist at all, and scripts/build_app.sh leaves the feed out of any build that
+    /// is not a release. With it, a build made from a branch would poll the releases, and where
+    /// automatic installs are on (a preference kept by bundle id, so shared with the installed
+    /// copy) it would be replaced by the published app as it quit.
+    private var updatesItself: Bool { Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil }
+
     private func setupUpdater() {
-        guard !isDevelopmentRun else { return }
+        guard updatesItself else { return }
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     }
 
@@ -154,6 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         w.tabbingMode = .disallowed
         w.backgroundColor = Theme.background
         w.delegate = self
+        // AppKit frees a closed window by default, while this object goes on holding it: a
+        // title that arrives after the close would be written to freed memory.
+        w.isReleasedWhenClosed = false
         w.center()
         w.setFrameAutosaveName("agent-farm.main")
 
@@ -176,10 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     // MARK: - the Python core
 
-    /// True for `swift run` during development; the assembled bundle carries an Info.plist
-    /// with a Sparkle feed, a release build never runs without one.
+    /// True for `swift run` during development: an executable with no Info.plist, so no bundle
+    /// id. Every assembled bundle has one, a local build as much as a release, though only a
+    /// release carries the update feed (updatesItself): what the app runs is not to be chosen
+    /// by the environment of a copy that was signed.
     private var isDevelopmentRun: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil
+        Bundle.main.bundleIdentifier == nil
     }
 
     private func coreExecutable() -> String? {
@@ -269,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         appMenu.addItem(withTitle: "About agent-farm",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        // With no updater (a `swift run`, a local build) the item has no target and stays greyed out.
         let check = NSMenuItem(title: "Check for Updates…",
                                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         check.target = updater

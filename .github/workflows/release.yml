@@ -8,7 +8,7 @@
 #   NOTARY_KEY_ID              App Store Connect API key id        (xcrun notarytool --key-id)
 #   NOTARY_ISSUER_ID           App Store Connect issuer id         (xcrun notarytool --issuer)
 #   NOTARY_KEY_P8              contents of the AuthKey_<id>.p8 file
-#   SPARKLE_PRIVATE_KEY        output of: .sparkle-tools/<ver>/bin/generate_keys --account agent-farm -x -
+#   SPARKLE_PRIVATE_KEY        output of: "$(scripts/sparkle_tools.sh)"/bin/generate_keys --account agent-farm -x -
 name: Release
 
 on:

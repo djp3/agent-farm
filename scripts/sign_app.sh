@@ -21,7 +21,11 @@ FW="$APP/Contents/Frameworks/Sparkle.framework"
 
 # 1. Every Mach-O in the Python tree: extension modules, dylibs, the interpreter library.
 find "$CORE/_internal" -type f \( -name "*.so" -o -name "*.dylib" -o ! -name "*.*" \) | sort | while read -r f; do
-    if file -b "$f" | grep -q "Mach-O"; then sign "$f"; fi
+    # Not `file | grep -q`: grep leaves at its first match, and under pipefail a `file` cut
+    # off mid-answer (it says several lines of a universal binary) fails the test, which
+    # would leave that binary unsigned without a word.
+    kind=$(file -b "$f")
+    case "$kind" in *Mach-O*) sign "$f" ;; esac
 done
 # The nested Python.framework is a bundle of its own (sign after its binary, before the app).
 if [ -d "$CORE/_internal/Python.framework/Versions/Current" ]; then
@@ -30,11 +34,14 @@ fi
 # 2. The entry executable, with the entitlements PyInstaller needs under the hardened runtime.
 sign --entitlements "$PY_ENT" "$CORE/agent-farm-core"
 
-# 3. Sparkle: its helpers first, keeping the entitlements they ship with, then the framework.
-for b in "$FW/Versions/B/XPCServices/Downloader.xpc" "$FW/Versions/B/XPCServices/Installer.xpc" \
-         "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app"; do
-    sign --preserve-metadata=entitlements "$b"
-done
+# 3. Sparkle, the way its own instructions re-sign it (sparkle-project.org/documentation/sandboxing,
+#    "Code Signing"): the helpers first, then the framework, and never --deep. Only the
+#    downloader keeps the entitlements it ships with. Autoupdate ships with an application
+#    identifier that names Sparkle's own project, which is not ours to vouch for.
+sign "$FW/Versions/B/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$FW/Versions/B/XPCServices/Downloader.xpc"
+sign "$FW/Versions/B/Autoupdate"
+sign "$FW/Versions/B/Updater.app"
 sign "$FW"
 
 # 4. The app itself.

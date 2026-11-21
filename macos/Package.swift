@@ -2,6 +2,10 @@
 // The native shell of agent-farm: a window hosting a SwiftTerm terminal that runs the
 // PyInstaller-built Python TUI (agent-farm-core), plus Sparkle for updates.
 // scripts/build_app.sh builds this and assembles dist/agent-farm.app around it.
+//
+// Sparkle's version here is a minimum. The one that is linked is pinned in Package.resolved,
+// and scripts/sparkle_tools.sh holds the hashes of that release's tools: raise the three
+// together.
 import PackageDescription
 
 let package = Package(

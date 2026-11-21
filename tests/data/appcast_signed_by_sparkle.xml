@@ -1,0 +1,23 @@
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>agent-grange-viz</title>
+        <item>
+            <title>9.9.9</title>
+            <pubDate>Fri, 20 Nov 2026 16:24:59 -0800</pubDate>
+            <link>https://example.invalid/releases</link>
+            <sparkle:version>9.9.9</sparkle:version>
+            <sparkle:shortVersionString>9.9.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[A made-up release, for a test.
+
+- one thing
+]]></description>
+            <enclosure url="http://127.0.0.1:8765/agent-grange-viz-9.9.9.zip" length="18940552" type="application/octet-stream" sparkle:edSignature="GSQiJA8JJkzh64/sf4n6159Lx7pAPyj8cmyzgU23xWpcPp9VoRQJfnTtjvZnQnC3iM35EE23RaY43jO5ms0pCA=="></enclosure>
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: zHykd4dlpgT1UDSd4gtUACdwdeMOzAiTLqh56XsdmFs0Ymb+aZ+6q8++9zbTKKLEVZ5CykjMo7EKk+F7FImRAQ==
+length: 1202
+-->
