@@ -18,6 +18,7 @@ grange-history.json
 # packaging output (scripts/build_app.sh, scripts/release.sh)
 build/
 dist/
-macos/.build/
+# SwiftPM's: under macos/, and wherever else a swift command was run
+.build/
 macos/Resources/AppIcon.icns
 .sparkle-tools/
