@@ -323,8 +323,9 @@ class Reporter:
         self.out = False                    # a push is on its way
         self.reply: Reply | None = None     # the last answer, and when it came
         self.reply_at = 0.0
-        self.count = 0                      # entries in the last push
+        self.count = 0                      # entries in the last push answered
         self.matched = 0                    # sessions that matched for it (more past AGENTS_MAX)
+        self._out_counts = (0, 0)           # the same for the push on its way, until its answer
 
     @staticmethod
     def _key(agents: list[dict]) -> tuple:
@@ -346,7 +347,7 @@ class Reporter:
                 self.reply = None
             self.sent = key
         self.out, self.last_try = True, now
-        self.count, self.matched = len(agents), max(matched, len(agents))
+        self._out_counts = (len(agents), max(matched, len(agents)))
         return agents
 
     def done(self, reply: Reply, now: float, port: int) -> None:
@@ -361,6 +362,7 @@ class Reporter:
             else:
                 log.warning("agent-grange on port %d: %s %s", port, reply.code or "", reply.problem)
         self.reply, self.reply_at = reply, now
+        self.count, self.matched = self._out_counts     # the words describe this push, answered
 
     def words(self, on: bool, owner: str, port: int, now: float) -> str:
         """The state of reporting in a sentence, for the settings panel and the fleet tooltip."""

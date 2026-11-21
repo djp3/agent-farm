@@ -316,6 +316,10 @@ def test_the_status_says_what_happened(monkeypatch):
     r.done(grange.Reply(204), 10.0, 7788)
     assert r.words(True, "octo-cat", 7788, 10.5) == "On: 2 sessions sent to port 7788, accepted just now."
     assert "accepted 5 s ago" in r.words(True, "octo-cat", 7788, 15.0)
+    r.next_push(A[:1], 16.0, matched=1)                 # on its way: the words still describe the
+    assert r.words(True, "octo-cat", 7788, 16.0) == "On: 2 sessions sent to port 7788, accepted 6 s ago."
+    r.done(grange.Reply(204), 16.5, 7788)               # last answer, until this one's comes
+    assert r.words(True, "octo-cat", 7788, 17.0) == "On: 1 session sent to port 7788, accepted just now."
     for reply, said in [(grange.Reply(None, "not running"), "no agent-grange is running on port 7788"),
                         (grange.Reply(503, "image out of date"), "make update"),
                         (grange.Reply(400, "missing owner"), "refused the list (400: missing owner)"),
