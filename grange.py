@@ -21,6 +21,10 @@ long run of a's tries every way to split it. So every search here runs under a t
 (_time_limit): a pattern's examples get TIME_LIMIT_S in all, and so does each name it is
 checked against. re's matching loop checks for signals, so the timer stops a runaway
 search; a pattern that runs out of time has no examples, and counts as not matching.
+Each name's answer for a pattern is remembered, running out of time included, so a slow
+pattern costs its time once per name rather than on every snapshot; and report() spends at
+most MATCH_BUDGET_S a snapshot on names it hasn't checked yet, leaving the rest for the
+next one, so a burst of new names never holds the screen for long.
 """
 from __future__ import annotations
 
@@ -31,8 +35,10 @@ import os
 import random
 import re
 import signal
+import socket
 import string
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -47,11 +53,13 @@ SAMPLE_MAX = 40         # characters in one sample; a longer draw is dropped
 REPEAT_EXTRA = 3        # a repeat draws at most this many past its minimum
 TIME_LIMIT_S = 0.25     # for one pattern's examples, and for checking one name against it
 DRAW_STEPS = 5000       # pieces of a pattern the drawer may visit, across all of its draws
+MATCH_BUDGET_S = 0.1    # report()'s time for names not checked yet; the rest wait a snapshot
+DECIDED_MAX = 4096      # remembered (pattern, name) answers; past it they are all forgotten
 
 HOST = "127.0.0.1"      # the grange listens on loopback only
 DEFAULT_PORT = 7788     # GRANGE_PORT in the grange's .env
 HEARTBEAT_S = 20.0      # the grange asks for a push at least every 30 s and calls 60 s stale
-TIMEOUT_S = 3.0         # for one push: connecting, sending and the answer
+TIMEOUT_S = 3.0         # for one push in all: connecting, sending and the whole answer
 FIELD_MAX = 256         # bytes in each string the grange accepts
 AGENTS_MAX = 200        # entries in one push
 REPLY_MAX = 64 * 1024   # bytes of an answer read, for its {"error": ...}
@@ -128,28 +136,52 @@ def _time_limit(seconds: float):
 
 
 _slow_warned: set[str] = set()
+_decided: dict[tuple[str, str], bool] = {}      # (pattern, name) -> matched; too slow is False
+
+
+def _search(pattern: str, rx: re.Pattern, name: str) -> bool:
+    """Whether rx finds a match in the name within TIME_LIMIT_S; too slow counts as no, and the
+    pattern is logged once, without the name. Remembered, so each name costs this once."""
+    key = (pattern, name)
+    hit = _decided.get(key)
+    if hit is not None:
+        return hit
+    try:
+        with _time_limit(TIME_LIMIT_S):
+            hit = rx.search(name) is not None
+    except _TooSlow:
+        if not _on_main_thread():
+            return False                # it couldn't be timed here; the main thread may manage it
+        if pattern not in _slow_warned:
+            _slow_warned.add(pattern)
+            log.warning("agent-grange pattern %r took over %.2fs on a session name; "
+                        "counted as not matching", pattern, TIME_LIMIT_S)
+        hit = False
+    if len(_decided) >= DECIDED_MAX:
+        _decided.clear()
+    _decided[key] = hit
+    return hit
+
+
+def _matches(name: str, entries: list[dict], deadline: float | None = None) -> bool | None:
+    """Whether a pattern that is on matches the name; None when the answer needs a search not
+    made yet and the deadline (time.monotonic()) has passed."""
+    for e in entries:
+        rx = _compiled(e["pattern"]) if e["enabled"] else None
+        if rx is None:
+            continue
+        if deadline is not None and (e["pattern"], name) not in _decided and time.monotonic() >= deadline:
+            return None
+        if _search(e["pattern"], rx, name):
+            return True
+    return False
 
 
 def reported(name: str, entries: list[dict]) -> bool:
     """Whether a session with this name goes to agent-grange: a pattern that is on matches it.
     A pattern that takes longer than TIME_LIMIT_S on the name counts as not matching, so a
     slow pattern never reports a session by accident (it is logged once, without the name)."""
-    for e in entries:
-        rx = _compiled(e["pattern"]) if e["enabled"] else None
-        if rx is None:
-            continue
-        try:
-            with _time_limit(TIME_LIMIT_S):
-                hit = rx.search(name) is not None
-        except _TooSlow:
-            if e["pattern"] not in _slow_warned:
-                _slow_warned.add(e["pattern"])
-                log.warning("agent-grange pattern %r took over %.2fs on a session name; "
-                            "counted as not matching", e["pattern"], TIME_LIMIT_S)
-            continue
-        if hit:
-            return True
-    return False
+    return _matches(name, entries) is True
 
 
 # ---- the push --------------------------------------------------------------------
@@ -182,13 +214,17 @@ def _fit(s: str) -> str:
     return s.encode("utf-8", "replace")[:FIELD_MAX].decode("utf-8", "ignore")
 
 
-def report(sessions, entries: list[dict], owner: str) -> tuple[list[dict], int]:
+def report(sessions, entries: list[dict], owner: str,
+           budget: float = MATCH_BUDGET_S) -> tuple[list[dict], int]:
     """The push's entries: one per session whose name a pattern that is on matches, in the
     order given, each with exactly owner, name and state; and how many sessions matched.
     Past AGENTS_MAX the rest are left out, since the grange would refuse the whole list.
     A session without a name is never sent: a board finds the pull request from the name.
+    Names not checked yet get `budget` seconds in all (and a slow search its TIME_LIMIT_S
+    past it); one still unchecked then is left out until a later call has checked it.
     `sessions` are anything with .name and .status. Call it on the main thread (reported())."""
-    picked = [s for s in sessions if s.name and reported(s.name, entries)]
+    deadline = time.monotonic() + budget
+    picked = [s for s in sessions if s.name and _matches(s.name, entries, deadline)]
     agents = [{"owner": _fit(owner), "name": _fit(s.name), "state": _fit(s.status)}
               for s in picked[:AGENTS_MAX]]
     return agents, len(picked)
@@ -226,22 +262,44 @@ def put_farm(port: int, agents: list[dict]) -> Reply:
     """Send the list to the grange on this Mac and say how it went. Never raises: a grange that
     isn't running, is out of date or refuses the list is an answer like any other, and the
     next push goes on schedule. http.client rather than urllib, so no proxy setting can route
-    it anywhere else; a bytes body always goes with Content-Length, never chunked."""
+    it anywhere else; a bytes body always goes with Content-Length, never chunked.
+
+    TIMEOUT_S bounds the whole push, not just each wait: a timer shuts the connection down
+    when it runs out, which wakes a read that is blocked on it, so a grange that answers a
+    byte at a time can't hold the push (and so every push after it, one being out at a time)."""
     body = json.dumps({"agents": agents}, ensure_ascii=False, separators=(",", ":")).encode()
     conn = http.client.HTTPConnection(HOST, port, timeout=TIMEOUT_S)
+    late, lock = threading.Event(), threading.Lock()
+
+    def cut() -> None:
+        with lock:                      # never on a socket the finally below has closed
+            late.set()
+            if conn.sock is not None:
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    timer = threading.Timer(TIMEOUT_S, cut)
+    timer.daemon = True
+    timer.start()
     try:
         conn.request("PUT", "/v1/farm", body=body,
                      headers={"Content-Type": "application/json", "Connection": "close"})
+        if late.is_set():               # ran out while connecting, before there was a socket to cut
+            raise TimeoutError
         r = conn.getresponse()
         data = r.read(REPLY_MAX)
     except ConnectionRefusedError:
         return Reply(None, "not running")
-    except TimeoutError:
-        return Reply(None, f"no answer in {TIMEOUT_S:g} s")
     except (OSError, http.client.HTTPException, ValueError) as e:   # ValueError: a port out of range
+        if late.is_set() or isinstance(e, TimeoutError):
+            return Reply(None, f"no answer in {TIMEOUT_S:g} s")
         return Reply(None, getattr(e, "strerror", None) or type(e).__name__)
     finally:
-        conn.close()
+        with lock:
+            timer.cancel()
+            conn.close()
     if r.status == 204:
         return Reply(204)
     return Reply(r.status, _error_in(data) or r.reason or "")
@@ -265,8 +323,9 @@ class Reporter:
         self.out = False                    # a push is on its way
         self.reply: Reply | None = None     # the last answer, and when it came
         self.reply_at = 0.0
-        self.count = 0                      # entries in the last push
+        self.count = 0                      # entries in the last push answered
         self.matched = 0                    # sessions that matched for it (more past AGENTS_MAX)
+        self._out_counts = (0, 0)           # the same for the push on its way, until its answer
 
     @staticmethod
     def _key(agents: list[dict]) -> tuple:
@@ -288,7 +347,7 @@ class Reporter:
                 self.reply = None
             self.sent = key
         self.out, self.last_try = True, now
-        self.count, self.matched = len(agents), max(matched, len(agents))
+        self._out_counts = (len(agents), max(matched, len(agents)))
         return agents
 
     def done(self, reply: Reply, now: float, port: int) -> None:
@@ -303,6 +362,7 @@ class Reporter:
             else:
                 log.warning("agent-grange on port %d: %s %s", port, reply.code or "", reply.problem)
         self.reply, self.reply_at = reply, now
+        self.count, self.matched = self._out_counts     # the words describe this push, answered
 
     def words(self, on: bool, owner: str, port: int, now: float) -> str:
         """The state of reporting in a sentence, for the settings panel and the fleet tooltip."""

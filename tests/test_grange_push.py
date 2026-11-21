@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -67,6 +68,40 @@ def test_past_200_matches_the_rest_are_left_out_and_counted():
     assert len(agents) == grange.AGENTS_MAX and matched == 230
     assert agents[0]["name"] == "proj-0" and agents[-1]["name"] == "proj-199"
 
+
+SLOW = r"(a+)+b"                    # backtracks catastrophically on a long run of a's
+
+
+def test_a_slow_pattern_costs_its_time_once_per_name_not_every_snapshot(monkeypatch):
+    monkeypatch.setattr(grange, "TIME_LIMIT_S", 0.05)
+    rules = [{"pattern": SLOW, "enabled": True}, {"pattern": "^zebra", "enabled": True}]
+    sessions = [session("a" * 40 + f"-{i}") for i in range(4)] + [session("zebra-1"), session("aab")]
+    began = time.monotonic()
+    agents, _ = grange.report(sessions, rules, "octo-cat", budget=10)
+    assert time.monotonic() - began >= 4 * grange.TIME_LIMIT_S      # each slow name ran out once
+    assert [a["name"] for a in agents] == ["zebra-1", "aab"]
+    began = time.monotonic()
+    for _ in range(5):                                              # the next snapshots
+        assert grange.report(sessions, rules, "octo-cat", budget=10)[0] == agents
+    assert time.monotonic() - began < grange.TIME_LIMIT_S           # nothing ran out again
+    rules[1]["pattern"] = "^aa"                                     # an edited pattern is checked anew
+    assert [a["name"] for a in grange.report(sessions, rules, "octo-cat")[0]] == \
+        [s.name for s in sessions[:4]] + ["aab"]
+
+
+def test_a_burst_of_new_names_is_checked_over_several_snapshots_instead_of_freezing(monkeypatch):
+    monkeypatch.setattr(grange, "TIME_LIMIT_S", 0.05)
+    rules = [{"pattern": SLOW, "enabled": True}, {"pattern": "^zebra", "enabled": True}]
+    sessions = [session("a" * 40 + f"-{i}") for i in range(12)] + [session("zebra-1")]
+    budget, calls, agents = 0.1, 0, None
+    while agents != [{"owner": "octo-cat", "name": "zebra-1", "state": "busy"}]:
+        began = time.monotonic()
+        agents, _ = grange.report(sessions, rules, "octo-cat", budget=budget)
+        assert time.monotonic() - began < budget + grange.TIME_LIMIT_S + 0.1   # one snapshot's share
+        calls += 1
+        assert calls < 20
+    assert calls > 1                    # 12 slow names were more than one snapshot's share
+    assert agents == grange.report(sessions, rules, "octo-cat", budget=0)[0]   # all remembered now
 
 # ---- the owner from gh -----------------------------------------------------------------
 
@@ -196,6 +231,35 @@ def test_a_grange_that_never_answers_is_given_up_on(monkeypatch):
 A = [{"owner": "o", "name": "proj-1", "state": "busy"}, {"owner": "o", "name": "proj-2", "state": "idle"}]
 
 
+def test_a_grange_that_answers_a_byte_at_a_time_is_given_up_on_in_the_time_for_one_push(monkeypatch):
+    monkeypatch.setattr(grange, "TIMEOUT_S", 0.3)
+    srv = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def drip():
+        c, _ = srv.accept()
+        c.recv(65536)
+        try:
+            for ch in b"HTTP/1.1 204 No Content\r\nX-Slow: " + b"a" * 50 + b"\r\n\r\n":
+                if stop.wait(0.05):     # each byte well inside the timeout for one wait
+                    break
+                c.sendall(bytes([ch]))
+        except OSError:
+            pass                        # the push hung up on it
+        c.close()
+
+    t = threading.Thread(target=drip, daemon=True)
+    t.start()
+    began = time.monotonic()
+    reply = REAL_PUT(srv.getsockname()[1], [])
+    took = time.monotonic() - began
+    stop.set()
+    t.join(5)
+    srv.close()
+    assert reply == grange.Reply(None, "no answer in 0.3 s")
+    assert took < 1.0                   # the whole answer would take over 3 s
+
+
 def test_a_push_goes_on_a_change_and_on_the_heartbeat_but_not_for_a_new_order():
     r = grange.Reporter()
     assert r.next_push(A, 0.0) == A
@@ -252,6 +316,10 @@ def test_the_status_says_what_happened(monkeypatch):
     r.done(grange.Reply(204), 10.0, 7788)
     assert r.words(True, "octo-cat", 7788, 10.5) == "On: 2 sessions sent to port 7788, accepted just now."
     assert "accepted 5 s ago" in r.words(True, "octo-cat", 7788, 15.0)
+    r.next_push(A[:1], 16.0, matched=1)                 # on its way: the words still describe the
+    assert r.words(True, "octo-cat", 7788, 16.0) == "On: 2 sessions sent to port 7788, accepted 6 s ago."
+    r.done(grange.Reply(204), 16.5, 7788)               # last answer, until this one's comes
+    assert r.words(True, "octo-cat", 7788, 17.0) == "On: 1 session sent to port 7788, accepted just now."
     for reply, said in [(grange.Reply(None, "not running"), "no agent-grange is running on port 7788"),
                         (grange.Reply(503, "image out of date"), "make update"),
                         (grange.Reply(400, "missing owner"), "refused the list (400: missing owner)"),
@@ -413,6 +481,44 @@ def test_the_settings_switch_the_login_field_and_g_there(tmp_path, monkeypatch, 
 
     _run(app, steps)
 
+
+class _Keep(logging.Handler):
+    """What the app logs. The app's log stops at the agent_farm logger (setup_logging), so
+    caplog, on the root logger, never sees it."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.said = []
+
+    def emit(self, record):
+        self.said.append(record.getMessage())
+
+
+def test_the_login_is_saved_but_never_written_to_the_log(tmp_path, monkeypatch):
+    assert "hubot" not in repr(Settings(grange_owner="hubot"))
+    app, p = _app(tmp_path, monkeypatch, grange_report=True)
+
+    async def steps(app, pilot):
+        await pilot.press("s")
+        await pilot.pause(0.2)
+        app.screen.query_one("#grange-owner").focus()
+        await pilot.press(*"hubot", "enter")
+        await pilot.pause(0.3)
+        await pilot.click("#grange_report")                 # any later change logs the settings again
+        await pilot.pause(0.3)
+        await pilot.press("escape")
+
+    keep, farm = _Keep(), logging.getLogger("agent_farm")
+    farm.addHandler(keep)
+    try:
+        _run(app, steps)
+    finally:
+        farm.removeHandler(keep)
+    assert json.loads(p.read_text())["grange_owner"] == "hubot"
+    assert Settings.load().grange_owner == "hubot"
+    said = keep.said
+    assert sum("settings changed" in m for m in said) >= 2
+    assert not any("hubot" in m for m in said)
 
 def test_esc_in_the_middle_of_typing_a_login_closes_the_panel_cleanly(tmp_path, monkeypatch, grange_pushes):
     app, p = _app(tmp_path, monkeypatch, grange_report=True, grange_owner="octo-cat")

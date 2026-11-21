@@ -37,7 +37,9 @@ class Settings:
     # Each entry is {"pattern": a Python regular expression, "enabled": bool}; see grange.py.
     grange_patterns: list = field(default_factory=list)
     grange_report: bool = False         # push them to the grange on this Mac (g turns it on and off)
-    grange_owner: str = ""              # the GitHub login sent as their owner; "" uses gh's sign-in
+    # The GitHub login sent as their owner; "" uses gh's sign-in. Kept out of repr(), which
+    # the settings panel logs on every change: the log carries no login.
+    grange_owner: str = field(default="", repr=False)
     grange_port: int = grange.DEFAULT_PORT   # GRANGE_PORT in the grange's .env (edit here; not in the panel)
 
     @classmethod
