@@ -24,3 +24,14 @@ def test_the_app_takes_no_feed_that_is_not_signed():
     assert plist["SURequireSignedFeed"] is True
     assert plist["SUVerifyUpdateBeforeExtraction"] is True
     assert plist["SUPublicEDKey"] and plist["SUFeedURL"].endswith("/releases/latest/download/appcast.xml")
+
+
+def test_closing_the_monitors_window_quits_the_app_whatever_else_is_open():
+    """applicationShouldTerminateAfterLastWindowClosed waits for the last window: with
+    Sparkle's update window open, closing the monitor left the app running with no monitor."""
+    swift = read("macos", "Sources", "AgentFarm", "AppDelegate.swift")
+    close = swift[swift.index("func windowWillClose(_ note: Notification)"):]
+    close = close[:close.index("\n    }\n")]
+    assert "guard (note.object as? NSWindow) === window else { return }" in close, "that window, not any"
+    assert "NSApp.terminate(nil)" in close
+    assert "w.isReleasedWhenClosed = false" in swift, "the delegate keeps the window it holds"
