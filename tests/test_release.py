@@ -7,7 +7,6 @@ published unless the zip and the feed are both signed, and nothing is built with
 is not the app's. (Ported from agent-grange-viz's, without its dry runs: every step that
 would leave this Mac is a stand-in here.)"""
 import base64
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -15,15 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from sparkle_standins import GENERATE_KEYS, appcast, shim
+from sparkle_standins import ANOTHER_KEY, GENERATE_KEYS, SEED, SEEDS_KEY, THE_APPS_KEY, appcast, shim, trusting
 
 ROOT = Path(__file__).resolve().parent.parent
-with open(ROOT / "macos" / "Info.plist", "rb") as _f:
-    THE_APPS_KEY = plistlib.load(_f)["SUPublicEDKey"]
-ANOTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="        # made up: thirty-two zero bytes
-# RFC 8032's first Ed25519 test vector: a published seed and the public key it makes.
-SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-SEEDS_KEY = base64.b64encode(bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")).decode()
 VERSION = "9.9.9"
 
 NOTES_A_CALL = '#!/bin/sh\necho "{name} $*" >> "$CALLS"\n'
@@ -108,12 +101,7 @@ class Release:
 
     def trusting(self, key: str) -> None:
         """The checkout's app trusts this public key."""
-        plist = self.root / "macos" / "Info.plist"
-        with open(plist, "rb") as f:
-            data = plistlib.load(f)
-        data["SUPublicEDKey"] = key
-        with open(plist, "wb") as f:
-            plistlib.dump(data, f)
+        trusting(self.root, key)
 
 
 @pytest.fixture

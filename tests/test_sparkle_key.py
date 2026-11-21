@@ -2,23 +2,16 @@
 would sign with the one installed copies trust? These run it against a generate_keys of their
 own, so no keychain is asked anything."""
 import base64
-import plistlib
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from sparkle_standins import GENERATE_KEYS, shim
+from sparkle_standins import ANOTHER_KEY, GENERATE_KEYS, SEED, SEEDS_KEY, THE_APPS_KEY, shim, trusting
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "check_sparkle_key.sh"
-with open(ROOT / "macos" / "Info.plist", "rb") as _f:
-    THE_APPS_KEY = plistlib.load(_f)["SUPublicEDKey"]
-ANOTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="        # made up: thirty-two zero bytes
-# RFC 8032's first Ed25519 test vector: a published seed and the public key it makes.
-SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-SEEDS_KEY = base64.b64encode(bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")).decode()
 
 @pytest.fixture
 def checkout(tmp_path):
@@ -66,16 +59,6 @@ def test_a_key_that_is_not_the_apps_stops_the_release(checkout):
 def test_no_key_under_the_account_stops_the_release(checkout):
     done = run(checkout)
     assert done.returncode == 1 and "no Sparkle key in the login keychain under the account 'agent-farm'" in done.stderr
-
-
-def trusting(checkout: Path, key: str) -> None:
-    """The checkout's app trusts this public key."""
-    plist = checkout / "macos" / "Info.plist"
-    with open(plist, "rb") as f:
-        data = plistlib.load(f)
-    data["SUPublicEDKey"] = key
-    with open(plist, "wb") as f:
-        plistlib.dump(data, f)
 
 
 def test_a_key_file_is_held_to_the_apps_key_and_the_keychain_left_alone(checkout):
