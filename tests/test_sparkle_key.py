@@ -121,3 +121,20 @@ def test_a_key_that_is_there_and_could_not_be_read_is_not_called_missing(checkou
     assert done.returncode == 1 and "no Sparkle key" not in done.stderr
     assert "could not be had from the login keychain. generate_keys said:" in done.stderr
     assert "    Access denied: the user cancelled the keychain prompt" in done.stderr
+
+
+def test_what_it_is_given_is_found_from_where_it_was_called(checkout):
+    """It moves to the checkout before it looks: a relative name used to be looked for there."""
+    elsewhere = checkout / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "exported.key").write_text(base64.b64encode(SEED).decode())
+    trusting(checkout, SEEDS_KEY)
+    script = str(checkout / "scripts" / SCRIPT.name)
+    env = {"PATH": "/usr/bin:/bin", "ASKED": str(checkout / "asked")}
+    by_file = subprocess.run(["/bin/bash", script, "../tools"], capture_output=True, text=True, cwd=elsewhere,
+                             env={**env, "SPARKLE_PRIVATE_KEY_FILE": "exported.key"})
+    assert by_file.returncode == 0, by_file.stderr
+    trusting(checkout, THE_APPS_KEY)
+    by_account = subprocess.run(["/bin/bash", script, "../tools"], capture_output=True, text=True, cwd=elsewhere,
+                                env={**env, "ANSWER": THE_APPS_KEY})
+    assert by_account.returncode == 0, by_account.stderr

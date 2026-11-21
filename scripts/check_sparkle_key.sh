@@ -15,6 +15,10 @@
 set -euo pipefail
 TOOLS=${1:?usage: check_sparkle_key.sh <tools folder>}
 ACCOUNT=${SPARKLE_ACCOUNT:-agent-farm}
+# What was named from where this was called is made whole before moving to the checkout:
+# the tools folder, and a key file ("-" is no file's name, and is refused below as it is).
+case "$TOOLS" in /*) ;; *) TOOLS="$PWD/$TOOLS" ;; esac
+case "${SPARKLE_PRIVATE_KEY_FILE:-}" in ""|/*|-) ;; *) SPARKLE_PRIVATE_KEY_FILE="$PWD/$SPARKLE_PRIVATE_KEY_FILE" ;; esac
 cd "$(dirname "$0")/.."
 
 WANT=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" macos/Info.plist)
