@@ -54,7 +54,8 @@ changes is a session's file modification times, when you press keep.
 2. Open it. The app is notarized, so it opens like any other download.
 
 Updates take care of themselves: the app checks GitHub once a day and offers each new release
-with its notes. **agent-farm ▸ Check for Updates…** checks now.
+with its notes. **agent-farm ▸ Check for Updates…** checks now. Each update, and the list of
+updates it comes in, is signed, and the app takes nothing that isn't.
 
 You need macOS 27 (Golden Gate) or later on Apple silicon, and Claude Code. To reach iTerm2
 tabs, turn on iTerm2's Python API (iTerm2 ▸ Settings ▸ General ▸ Magic ▸ Enable Python API).

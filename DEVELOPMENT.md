@@ -90,16 +90,28 @@ Steps, all in that script:
    agent-frolic runs the same check.
 5. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
    nested `Python.framework`, the entry executable with `packaging/python.entitlements`,
-   Sparkle's helpers and framework, then the app. Local builds are ad-hoc signed without the
-   hardened runtime (an ad-hoc signature has no team, so a hardened-runtime app could not
-   load its own frameworks). `CODESIGN_IDENTITY="Developer ID Application: …"` signs for real.
+   Sparkle's helpers the way Sparkle's own instructions re-sign them (only `Downloader.xpc`
+   keeps the entitlements it ships with; never `--deep`), its framework, then the app. The
+   build signs with the first Developer ID Application certificate in the keychain, so a
+   local build keeps the privacy grants a release has, or `CODESIGN_IDENTITY`. Without one it
+   signs ad-hoc and without the hardened runtime (an ad-hoc signature has no team, so a
+   hardened-runtime app could not load its own frameworks).
+
+Only a release looks for updates. A copy built by `scripts/build_app.sh` alone has no
+`SUFeedURL` (nor the automatic-check keys), so it starts no updater and **Check for Updates…**
+stays grey: it has the installed app's bundle id, and so its Sparkle preferences, and with
+automatic installs on it would be replaced by the published app as it quit. `release.sh`
+builds with `WITH_UPDATES=1`, which keeps the feed. The build also holds SwiftPM to
+`Package.resolved` (`--only-use-versions-from-resolved-file`), keeps only the
+`@executable_path/../Frameworks` rpath and stops if that is not what is left.
 
 The host app (`macos/Sources/AgentFarm/AppDelegate.swift`) sets `COLORTERM=truecolor`
 and a UTF-8 locale for the child (helpers are run by absolute path, so no PATH changes),
 quits when the Python side exits cleanly (after `q` in the monitor), shows a restart hint
-if it exits with an error, and provides the menus. `swift run` from `macos/` works without a bundle for UI work; set
-`AGENT_FARM_CORE=/path/to/executable` to choose what it runs, and Sparkle stays off because
-there is no `Info.plist`.
+if it exits with an error, and provides the menus. Closing its window quits it, whatever else
+is open (Sparkle's update window included). `swift run` from `macos/` works without a bundle
+for UI work; set `AGENT_FARM_CORE=/path/to/executable` to choose what it runs (only a run
+without a bundle id honours it), and Sparkle stays off because there is no `Info.plist`.
 
 An app built for macOS 27 gets its window title at the left of the title bar, and AppKit has
 no setting for that. `CenteredTitle.swift` hides the system's title and draws it in the
@@ -148,8 +160,10 @@ update. Sparkle compares `CFBundleVersion`, which is `VERSION`, so bump it every
   `macos/.build`: with only its `artifacts` folder gone, SwiftPM believes the download is still
   there. Older releases downloaded the tools to `.sparkle-tools/`, which can be deleted.
 
-  A new key pair means a new public key in `Info.plist`, and apps already installed will
-  reject updates signed with it, so keep this one backed up:
+  The app takes only an appcast signed with this key (`SURequireSignedFeed`, with
+  `SUVerifyUpdateBeforeExtraction`), as well as the zip in it. A new key pair means a new
+  public key in `Info.plist`, which installed apps never see: a lost key means nothing can
+  be offered to them again. Keep this one backed up:
   `generate_keys --account agent-farm -x sparkle_ed25519` exports it.
 - `gh` logged in with push access.
 
@@ -160,11 +174,17 @@ update. Sparkle compares `CFBundleVersion`, which is `VERSION`, so bump it every
     git add VERSION release-notes && git commit -m "Release 0.2.0" && git push
     scripts/release.sh
 
-The script refuses to run with uncommitted changes, an existing tag or no notes file. It
-builds with the Developer ID, notarizes with `notarytool --wait`, staples, verifies with
-`spctl` and zips with `ditto`. It then writes and signs the appcast with `generate_appcast`,
-tags, pushes the tag and creates the release. Delete a bad release on GitHub and `latest`
-falls back to the previous one.
+The script refuses to run with uncommitted changes, an existing tag or no notes file, and
+before it builds anything it checks Sparkle's tools against their pinned hashes and the
+Sparkle key against `SUPublicEDKey` (`scripts/check_sparkle_key.sh`: the keychain's by the
+`agent-farm` account, or an exported key file's public half). It builds with the Developer ID
+and `WITH_UPDATES=1`, checks the tools again, notarizes with `notarytool --wait`, staples,
+verifies with `spctl` and zips with `ditto`. `generate_appcast` then writes the appcast and
+signs the zip and the feed; `scripts/check_appcast.py` checks that both signatures and the
+notes are there, and `sign_update --verify` that the feed's signature holds. Only then does
+it tag, push the tag and create the release. Delete a bad release on GitHub and `latest`
+falls back to the previous one. `tests/test_release.py` runs the script with stand-ins for
+everything outside it.
 
 The notes in `release-notes/<VERSION>.md` show in two places:
 
