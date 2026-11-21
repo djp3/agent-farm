@@ -40,9 +40,11 @@ die() { echo "release: $*" >&2; exit 1; }
 step "preflight $TAG"
 # Sign by certificate hash rather than by name: a keychain can hold two certificates with
 # the same name (a renewed one beside the old), and codesign rejects an ambiguous name.
-IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Developer ID Application/ {print $2; exit}')}
+# No awk here stops at its first match: under pipefail, a `security` cut off while it still
+# had lines to write fails the pipeline, and the assignment would end the script unheard.
+IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Developer ID Application/ && !n++ {print $2}')}
 [ -n "$IDENTITY" ] || die "no 'Developer ID Application' identity in the keychain (or set CODESIGN_IDENTITY)"
-IDENTITY_NAME=$(security find-identity -v -p codesigning | awk -F'"' -v h="$IDENTITY" '$0 ~ h {print $2; exit}')
+IDENTITY_NAME=$(security find-identity -v -p codesigning | awk -F'"' -v h="$IDENTITY" '$0 ~ h && !n++ {print $2}')
 DIRTY=$(git status --porcelain)           # includes untracked files, which PyInstaller would bundle
 if [ -n "$DIRTY" ]; then
     [ "${ALLOW_DIRTY:-0}" = 1 ] || die "working tree is not clean (ALLOW_DIRTY=1 overrides):

@@ -21,7 +21,9 @@ APP=dist/agent-farm.app
 # hash, since a renewed certificate can sit beside the old one under the same name), else
 # ad-hoc. macOS privacy grants (Files and Folders) are tied to the signing
 # identity, so local builds signed the same way as releases keep the user's permissions.
-IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $2; exit}')}
+# No awk here stops at its first match: under pipefail, a `security` cut off while it still
+# had lines to write fails the pipeline, and the assignment would end the script unheard.
+IDENTITY=${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ && !n++ {print $2}')}
 IDENTITY=${IDENTITY:--}
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -43,7 +45,9 @@ rm -f "$BIN"                                   # so an existing binary can only 
     | grep -E "error|warning: unre|Build complete"
   [ "${PIPESTATUS[0]}" -eq 0 ] )              # keep the compiler's verdict, not grep's
 [ -x "$BIN" ] || { echo "swift build did not produce $BIN" >&2; exit 1; }
-SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "*macos-*" | head -1)
+# -print -quit, not `| head -1`: under pipefail a find cut off by head fails the pipeline,
+# and the assignment would end the script with nothing said.
+SPARKLE_FW=$(find macos/.build/artifacts -type d -name Sparkle.framework -path "*macos-*" -print -quit)
 [ -d "$SPARKLE_FW" ] || { echo "Sparkle.framework not found under macos/.build/artifacts" >&2; exit 1; }
 
 step "icon"

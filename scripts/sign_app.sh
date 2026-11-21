@@ -21,7 +21,11 @@ FW="$APP/Contents/Frameworks/Sparkle.framework"
 
 # 1. Every Mach-O in the Python tree: extension modules, dylibs, the interpreter library.
 find "$CORE/_internal" -type f \( -name "*.so" -o -name "*.dylib" -o ! -name "*.*" \) | sort | while read -r f; do
-    if file -b "$f" | grep -q "Mach-O"; then sign "$f"; fi
+    # Not `file | grep -q`: grep leaves at its first match, and under pipefail a `file` cut
+    # off mid-answer (it says several lines of a universal binary) fails the test, which
+    # would leave that binary unsigned without a word.
+    kind=$(file -b "$f")
+    case "$kind" in *Mach-O*) sign "$f" ;; esac
 done
 # The nested Python.framework is a bundle of its own (sign after its binary, before the app).
 if [ -d "$CORE/_internal/Python.framework/Versions/Current" ]; then
