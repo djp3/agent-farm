@@ -50,3 +50,23 @@ def test_sparkle_is_signed_by_its_own_recipe_inside_out():
                        'sign "$FW"']
     assert steps.index('sign "$FW"') < steps.index('sign "$APP"'), "the framework before the app that carries it"
     assert "--deep" not in " ".join(steps)
+
+
+def test_sparkles_version_is_pinned_once_and_the_build_keeps_to_it():
+    """Package.swift gives a minimum, Package.resolved the version linked, and
+    scripts/sparkle_tools.sh the hashes of that version's tools: the three move together."""
+    import json
+    import re
+    pins = json.loads(read("macos", "Package.resolved"))["pins"]
+    version = next(pin["state"]["version"] for pin in pins if pin["identity"] == "sparkle")
+    script = read("scripts", "sparkle_tools.sh")
+    for tool in ("generate_appcast", "generate_keys", "sign_update"):
+        assert re.search(rf'^\s*{re.escape(version)}:{tool}\)\s+echo "[0-9a-f]{{64}}" ;;$', script, re.M), \
+            f"no pinned SHA-256 for the {tool} of Sparkle {version}, the version the app links"
+    package = read("macos", "Package.swift")
+    least = re.search(r'sparkle-project/Sparkle\.git", from: "([0-9.]+)"', package).group(1)
+    assert tuple(map(int, least.split("."))) <= tuple(map(int, version.split("."))), \
+        f"macos/Package.swift asks for Sparkle {least} or later and macos/Package.resolved pins {version}"
+    assert "swift build --only-use-versions-from-resolved-file" in read("scripts", "build_app.sh"), \
+        "the build does not move the pin"
+    assert "swift package --only-use-versions-from-resolved-file resolve" in script
