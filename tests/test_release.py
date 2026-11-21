@@ -50,7 +50,8 @@ GENERATE_APPCAST = NOTES_A_CALL.format(name="generate_appcast") + """out=""
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out=$2; shift; done
 cp "$APPCAST" "$out"
 """
-SIGN_UPDATE = NOTES_A_CALL.format(name="sign_update") + "exit ${VERIFIES:-0}\n"
+# Sparkle's sign_update --verify: it says why it fails on standard output ($SAYS).
+SIGN_UPDATE = NOTES_A_CALL.format(name="sign_update") + '[ -z "${SAYS:-}" ] || echo "$SAYS"\nexit ${VERIFIES:-0}\n'
 # scripts/sparkle_tools.sh refuses on its $TOOLS_REFUSED_AT'th call, when that is set.
 TOOLS_OR_NOT = """n=$(grep -c '^sparkle_tools' "$CALLS")
 if [ "$n" = "${TOOLS_REFUSED_AT:-}" ]; then echo "refusing to use it" >&2; exit 1; fi
@@ -208,9 +209,18 @@ def test_nothing_is_tagged_or_published_unless_the_zip_and_the_feed_are_both_sig
 
 
 def test_a_feed_whose_signature_does_not_verify_is_not_published(release):
-    done = release.run(VERIFIES="1")
+    done = release.run(VERIFIES="1", SAYS="Error: The signature does not match the feed")
     assert done.returncode == 1 and "the signature on appcast.xml does not verify" in done.stderr
+    assert "sign_update said:\n    Error: The signature does not match the feed" in done.stderr
     assert not (release.called("git tag") or release.called("git push") or release.called("gh release create"))
+
+
+def test_what_sign_update_says_is_shown_but_never_a_key_it_repeats(release):
+    """One of sign_update's messages repeats the key text it could not read."""
+    secret = "c2VjcmV0LWtleS1tYXRlcmlhbA=="
+    done = release.run(VERIFIES="1", SAYS=f"ERROR! Failed to decode base64 encoded key data from: {secret}")
+    assert done.returncode == 1 and "key data from: (not shown)" in done.stderr
+    assert secret not in done.stderr + done.stdout
 
 
 @pytest.mark.parametrize("answer, said", [(ANOTHER_KEY, "is not the one in macos/Info.plist"),
