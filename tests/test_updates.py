@@ -35,3 +35,18 @@ def test_closing_the_monitors_window_quits_the_app_whatever_else_is_open():
     assert "guard (note.object as? NSWindow) === window else { return }" in close, "that window, not any"
     assert "NSApp.terminate(nil)" in close
     assert "w.isReleasedWhenClosed = false" in swift, "the delegate keeps the window it holds"
+
+
+def test_sparkle_is_signed_by_its_own_recipe_inside_out():
+    """sparkle-project.org/documentation/sandboxing, "Code Signing": only the downloader keeps
+    the entitlements it ships with. Autoupdate's name Sparkle's project, not this one."""
+    sign = read("scripts", "sign_app.sh")
+    steps = [line.strip() for line in sign.splitlines() if line.startswith("sign ")]
+    sparkle = [step for step in steps if "$FW" in step]
+    assert sparkle == ['sign "$FW/Versions/B/XPCServices/Installer.xpc"',
+                       'sign --preserve-metadata=entitlements "$FW/Versions/B/XPCServices/Downloader.xpc"',
+                       'sign "$FW/Versions/B/Autoupdate"',
+                       'sign "$FW/Versions/B/Updater.app"',
+                       'sign "$FW"']
+    assert steps.index('sign "$FW"') < steps.index('sign "$APP"'), "the framework before the app that carries it"
+    assert "--deep" not in " ".join(steps)
