@@ -36,8 +36,19 @@ if [ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]; then
     echo "sparkle key: the file $SPARKLE_PRIVATE_KEY_FILE, the one in Info.plist"
     exit 0
 fi
-HAVE=$("$TOOLS/bin/generate_keys" --account "$ACCOUNT" -p 2>/dev/null) \
-    || { echo "no Sparkle key in the login keychain under the account '$ACCOUNT' (DEVELOPMENT.md, \"Releasing\")" >&2; exit 1; }
+# generate_keys says why it failed where its answer would have been, on standard output. "No
+# key" is one thing it may say; a keychain that is locked, or access that was refused or
+# cancelled, are others, and the key is there all the while. So its own words are passed on.
+if ! HAVE=$("$TOOLS/bin/generate_keys" --account "$ACCOUNT" -p 2>&1); then
+    case "$HAVE" in
+        *"No existing signing key found"*)
+            echo "no Sparkle key in the login keychain under the account '$ACCOUNT' (DEVELOPMENT.md, \"Releasing\")" >&2 ;;
+        *)
+            echo "the Sparkle key under the account '$ACCOUNT' could not be had from the login keychain. generate_keys said:" >&2
+            printf '%s\n' "$HAVE" | sed 's/^/    /' >&2 ;;
+    esac
+    exit 1
+fi
 [ "$HAVE" = "$WANT" ] \
     || { echo "the Sparkle key under the account '$ACCOUNT' is not the one in macos/Info.plist (SUPublicEDKey): installed copies would take nothing it signs" >&2; exit 1; }
 echo "sparkle key: the login keychain's, account $ACCOUNT, the one in Info.plist"

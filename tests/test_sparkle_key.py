@@ -129,3 +129,12 @@ def test_a_key_that_can_be_read_only_once_is_refused_for_what_it_is(checkout, na
     done = run(checkout, SPARKLE_PRIVATE_KEY_FILE=named)
     assert done.returncode == 1 and "must be a file, not \"-\" or a pipe" in done.stderr
     assert asked(checkout) == []
+
+
+def test_a_key_that_is_there_and_could_not_be_read_is_not_called_missing(checkout):
+    """A locked keychain, or access refused or cancelled: generate_keys says so on standard
+    output, which used to be thrown away, and every failure read as "no key"."""
+    done = run(checkout, ANSWER=THE_APPS_KEY, REFUSAL="Access denied: the user cancelled the keychain prompt")
+    assert done.returncode == 1 and "no Sparkle key" not in done.stderr
+    assert "could not be had from the login keychain. generate_keys said:" in done.stderr
+    assert "    Access denied: the user cancelled the keychain prompt" in done.stderr
