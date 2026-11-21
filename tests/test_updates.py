@@ -95,3 +95,11 @@ def test_only_a_swift_run_lets_the_environment_choose_what_the_app_runs():
     dev = swift[swift.index("private var isDevelopmentRun: Bool {"):]
     assert dev[:dev.index("}")].split("{", 1)[1].strip() == "Bundle.main.bundleIdentifier == nil"
     assert 'if isDevelopmentRun, let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"]' in swift
+
+
+def test_the_app_looks_for_its_frameworks_in_one_place_or_is_not_built():
+    build = read("scripts", "build_app.sh")
+    assert 'NEEDED="@executable_path/../Frameworks"' in build
+    checked = build.index('[ "$(rpaths)" = "$NEEDED" ] || {')
+    assert checked < build.index('cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"') < build.index('scripts/sign_app.sh "$APP"')
+    assert "@executable_path/../Frameworks" in read("macos", "Package.swift"), "where the app finds the framework it carries"

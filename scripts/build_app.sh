@@ -57,11 +57,18 @@ step "assemble $APP ($VERSION)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentFarm"
-# SwiftPM records an absolute rpath into .build for the Sparkle artifact; the app
-# only needs the @executable_path/../Frameworks one set in Package.swift.
-otool -l "$APP/Contents/MacOS/AgentFarm" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}' | while read -r rp; do
-    case "$rp" in /*) install_name_tool -delete_rpath "$rp" "$APP/Contents/MacOS/AgentFarm" 2>/dev/null || true ;; esac
+# Where the app looks for Sparkle.framework. It needs one place, the one Package.swift sets:
+# its own Contents/Frameworks. SwiftPM adds @loader_path, beside the executable, where a
+# `swift run` finds the framework and the finished app has nothing; and it has been known to
+# record an absolute path into .build. Whatever else is there is taken out, and the build
+# stops if the one that matters is not: the app would not start.
+EXE="$APP/Contents/MacOS/AgentFarm"
+NEEDED="@executable_path/../Frameworks"
+rpaths() { otool -l "$EXE" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}'; }
+for rp in $(rpaths); do
+    [ "$rp" = "$NEEDED" ] || install_name_tool -delete_rpath "$rp" "$EXE"
 done
+[ "$(rpaths)" = "$NEEDED" ] || { echo "the app's executable looks for its frameworks in: $(rpaths | tr '\n' ' '); it must be $NEEDED alone" >&2; exit 1; }
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 cp -R dist/python/agent-farm-core "$APP/Contents/Resources/agent-farm-core"
 cp macos/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
