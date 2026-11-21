@@ -82,6 +82,22 @@ SPARKLE_ACCOUNT="$SPARKLE_ACCOUNT" scripts/check_sparkle_key.sh "$TOOLS" || die 
 step "build"
 # WITH_UPDATES=1: this copy is the one that is to update itself.
 WITH_UPDATES=1 CODESIGN_IDENTITY="$IDENTITY" scripts/build_app.sh
+# What was asked for is looked for in what was built. A copy that came out without its feed
+# would pass every check that follows (its appcast is signed and verifies all the same) and
+# be published, and nobody who installed it would ever be offered another. So: the feed the
+# source names, both of the things that make the app refuse an unsigned update, and its key.
+BUILT="$APP/Contents/Info.plist"
+in_app() { /usr/libexec/PlistBuddy -c "Print :$1" "$BUILT" 2>/dev/null || true; }
+in_source() { /usr/libexec/PlistBuddy -c "Print :$1" macos/Info.plist 2>/dev/null || true; }
+[ -n "$(in_source SUFeedURL)" ] || die "macos/Info.plist names no update feed (SUFeedURL)"
+[ "$(in_app SUFeedURL)" = "$(in_source SUFeedURL)" ] \
+    || die "the copy that was built does not carry the update feed: installed, it would never update again.
+(scripts/build_app.sh leaves the feed out unless it is told WITH_UPDATES=1)"
+for key in SURequireSignedFeed SUVerifyUpdateBeforeExtraction; do
+    [ "$(in_app "$key")" = "true" ] || die "the copy that was built does not set $key: it would take an unsigned update"
+done
+[ "$(in_app SUPublicEDKey)" = "$(in_source SUPublicEDKey)" ] \
+    || die "the copy that was built does not carry the app's Sparkle key (SUPublicEDKey)"
 # The tools were checked in preflight, and the build has had SwiftPM at its packages since.
 # They are about to be handed the key: check them again, where they lie now.
 TOOLS=$(scripts/sparkle_tools.sh)
