@@ -109,11 +109,11 @@ def test_the_licenses_of_what_the_app_carries_go_with_every_copy():
     """Sparkle's framework is carried whole and SwiftTerm is compiled in; each license asks
     that its text go with every copy. The app only named them."""
     build = read("scripts", "build_app.sh")
-    copied = build.index('cp "macos/.build/checkouts/$package/LICENSE" "$APP/Contents/Resources/licenses/$package.txt"')
+    copied = build.index('cp "macos/.build/checkouts/$package/LICENSE" "$APP/Contents/Resources/LICENSE-$package"')
     assert "for package in Sparkle SwiftTerm; do" in build
     assert build.index('|| { echo "no license text for $package') < copied < build.index('scripts/sign_app.sh "$APP"'), \
         "there, or no build; and sealed by the signature"
-    built = ROOT / "dist" / "agent-farm.app" / "Contents" / "Resources" / "licenses"
-    if built.is_dir():                                   # an app was built here: look at it
-        assert "Permission is hereby granted" in (built / "Sparkle.txt").read_text()
-        assert "Miguel de Icaza" in (built / "SwiftTerm.txt").read_text()
+    built = ROOT / "dist" / "agent-farm.app" / "Contents" / "Resources"
+    if (built / "LICENSE-Sparkle").is_file():            # an app was built here: look at it
+        assert "Permission is hereby granted" in (built / "LICENSE-Sparkle").read_text()
+        assert "Miguel de Icaza" in (built / "LICENSE-SwiftTerm").read_text()

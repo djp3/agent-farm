@@ -76,8 +76,8 @@ Steps, all in that script:
    `macos/Resources/rooster.png`, drawn by `scripts/make_icon.swift` whenever the script or
    the image is newer than the cached `AppIcon.icns`; never Apple's emoji artwork, which is
    not licensed for redistribution), its license notice, the licenses of Sparkle and SwiftTerm
-   (from the packages SwiftPM fetched, in `Contents/Resources/licenses`; the build stops
-   without them), and `Info.plist` with `VERSION` filled in for both
+   (from the packages SwiftPM fetched, as `LICENSE-Sparkle` and `LICENSE-SwiftTerm` beside
+   the app's own; the build stops without them), and `Info.plist` with `VERSION` filled in for both
    `CFBundleShortVersionString` and `CFBundleVersion`.
 4. **Check the minimum macOS** with `scripts/check_min_macos.py`. It reads each binary's
    Mach-O header itself (no otool, standard library only) and counts only the Apple-silicon

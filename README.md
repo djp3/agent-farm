@@ -476,4 +476,5 @@ copyright Google LLC, used under its open license; see
 
 The Mac app carries [Sparkle](https://sparkle-project.org) and
 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm), each under its own license, whose
-text is in the app at `Contents/Resources/licenses`.
+text is in the app beside its own, in `Contents/Resources` (`LICENSE-Sparkle`,
+`LICENSE-SwiftTerm`).
