@@ -147,8 +147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         if coreRunning { terminal.terminate() }
     }
 
+    /// Only a copy that carries a feed updates itself, and only a release does. A `swift run`
+    /// has no Info.plist at all, and scripts/build_app.sh leaves the feed out of any build that
+    /// is not a release. With it, a build made from a branch would poll the releases, and where
+    /// automatic installs are on (a preference kept by bundle id, so shared with the installed
+    /// copy) it would be replaced by the published app as it quit.
+    private var updatesItself: Bool { Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil }
+
     private func setupUpdater() {
-        guard !isDevelopmentRun else { return }
+        guard updatesItself else { return }
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     }
 
@@ -187,10 +194,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
 
     // MARK: - the Python core
 
-    /// True for `swift run` during development; the assembled bundle carries an Info.plist
-    /// with a Sparkle feed, a release build never runs without one.
+    /// True for `swift run` during development: an executable with no Info.plist, so no bundle
+    /// id. Every assembled bundle has one, a local build as much as a release, though only a
+    /// release carries the update feed (updatesItself): what the app runs is not to be chosen
+    /// by the environment of a copy that was signed.
     private var isDevelopmentRun: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") == nil
+        Bundle.main.bundleIdentifier == nil
     }
 
     private func coreExecutable() -> String? {
@@ -280,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Loca
         appMenu.addItem(withTitle: "About agent-farm",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        // With no updater (a `swift run`, a local build) the item has no target and stays greyed out.
         let check = NSMenuItem(title: "Check for Updates…",
                                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         check.target = updater

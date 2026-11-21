@@ -6,6 +6,8 @@
 #   4. check the minimum macOS (scripts/check_min_macos.py): stop if a binary needs more
 #      than Info.plist declares, or the Swift executable records a different minimum
 #   5. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
+# Only a release (WITH_UPDATES=1, which scripts/release.sh sets) carries the update feed: a
+# copy built by hand never looks for updates, so it never replaces itself with a release.
 # Needs: .venv with requirements.txt + requirements-build.txt, Xcode command line tools.
 # The version comes from VERSION and is used for both CFBundleShortVersionString and
 # CFBundleVersion (Sparkle compares the latter, dotted numbers compare naturally).
@@ -66,6 +68,15 @@ cp macos/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-emoji.txt"
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
+if [ "${WITH_UPDATES:-0}" != 1 ]; then
+    # Only a release updates itself (WITH_UPDATES=1, which release.sh sets). A copy built here
+    # has the installed app's bundle id, and so its Sparkle preferences: with automatic
+    # installs on, it would be replaced by the published app as it quit. Without a feed the
+    # app starts no updater (AppDelegate.updatesItself) and Check for Updates stays grey.
+    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" -c "Delete :SUEnableAutomaticChecks" \
+        -c "Delete :SUScheduledCheckInterval" "$APP/Contents/Info.plist"
+    echo "no update feed in this copy: it is not a release (WITH_UPDATES=1 makes one that updates itself)"
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 step "minimum macOS"

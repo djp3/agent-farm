@@ -78,7 +78,8 @@ echo "sparkle tools: $TOOLS"
 SPARKLE_ACCOUNT="$SPARKLE_ACCOUNT" scripts/check_sparkle_key.sh "$TOOLS" || die "the Sparkle key is not usable; nothing was built"
 
 step "build"
-CODESIGN_IDENTITY="$IDENTITY" scripts/build_app.sh
+# WITH_UPDATES=1: this copy is the one that is to update itself.
+WITH_UPDATES=1 CODESIGN_IDENTITY="$IDENTITY" scripts/build_app.sh
 # The tools were checked in preflight, and the build has had SwiftPM at its packages since.
 # They are about to be handed the key: check them again, where they lie now.
 TOOLS=$(scripts/sparkle_tools.sh)

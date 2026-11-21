@@ -70,3 +70,28 @@ def test_sparkles_version_is_pinned_once_and_the_build_keeps_to_it():
     assert "swift build --only-use-versions-from-resolved-file" in read("scripts", "build_app.sh"), \
         "the build does not move the pin"
     assert "swift package --only-use-versions-from-resolved-file resolve" in script
+
+
+def test_only_a_release_looks_for_updates():
+    """A copy built by hand has the installed app's bundle id, and so its Sparkle preferences:
+    with automatic installs on, it would be replaced by the published app as it quit."""
+    build = read("scripts", "build_app.sh")
+    left_out = build[build.index('if [ "${WITH_UPDATES:-0}" != 1 ]; then'):]
+    left_out = left_out[:left_out.index("\nfi\n")]
+    assert '-c "Delete :SUFeedURL"' in left_out
+    assert build.index('macos/Info.plist > "$APP/Contents/Info.plist"') < build.index('if [ "${WITH_UPDATES:-0}"') \
+        < build.index('scripts/sign_app.sh "$APP"'), "taken out of the copy's own plist, before it is sealed"
+    assert "WITH_UPDATES=1 CODESIGN_IDENTITY=" in read("scripts", "release.sh")
+    swift = read("macos", "Sources", "AgentFarm", "AppDelegate.swift")
+    assert 'updatesItself: Bool { Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil }' in swift
+    setup = swift[swift.index("private func setupUpdater()"):]
+    assert setup.index("guard updatesItself else { return }") < setup.index("SPUStandardUpdaterController(")
+
+
+def test_only_a_swift_run_lets_the_environment_choose_what_the_app_runs():
+    """AGENT_FARM_CORE is for development. A local build is signed like a release (and holds
+    the user's privacy grants), and has no feed: having no feed must not let it in."""
+    swift = read("macos", "Sources", "AgentFarm", "AppDelegate.swift")
+    dev = swift[swift.index("private var isDevelopmentRun: Bool {"):]
+    assert dev[:dev.index("}")].split("{", 1)[1].strip() == "Bundle.main.bundleIdentifier == nil"
+    assert 'if isDevelopmentRun, let p = ProcessInfo.processInfo.environment["AGENT_FARM_CORE"]' in swift
