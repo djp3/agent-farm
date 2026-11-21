@@ -17,7 +17,7 @@
 #   - notarization credentials: a notarytool keychain profile named agent-farm
 #       xcrun notarytool store-credentials agent-farm --apple-id <id> --team-id <team> --password <app-specific>
 #     or NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY_FILE (App Store Connect API key; what CI uses)
-#   - the Sparkle key:  .sparkle-tools/<ver>/bin/generate_keys --account agent-farm
+#   - the Sparkle key:  "$(scripts/sparkle_tools.sh)"/bin/generate_keys --account agent-farm -p
 #     or SPARKLE_PRIVATE_KEY_FILE pointing at an exported key (what CI uses)
 #   - gh logged in with push access to the repo
 set -euo pipefail
@@ -56,7 +56,7 @@ git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already e
 git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && die "tag $TAG already exists on origin; bump VERSION first"
 gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && die "release $TAG already exists on GitHub"
 [ -s "$NOTES" ] || die "no release notes in $NOTES; write what is new in $VERSION first (DEVELOPMENT.md, \"Releasing\")"
-TOOLS=$(scripts/fetch_sparkle_tools.sh)
+TOOLS=$(scripts/sparkle_tools.sh)
 if [ -n "${NOTARY_KEY_FILE:-}" ]; then
     NOTARY_ARGS=(--key "$NOTARY_KEY_FILE" --key-id "${NOTARY_KEY_ID:?NOTARY_KEY_ID}" --issuer "${NOTARY_ISSUER_ID:?NOTARY_ISSUER_ID}")
 else
@@ -74,6 +74,9 @@ echo "sparkle tools: $TOOLS"
 
 step "build"
 CODESIGN_IDENTITY="$IDENTITY" scripts/build_app.sh
+# The tools were checked in preflight, and the build has had SwiftPM at its packages since.
+# They are about to be handed the key: check them again, where they lie now.
+TOOLS=$(scripts/sparkle_tools.sh)
 
 step "notarize"
 rm -f dist/notarize.zip

@@ -23,7 +23,7 @@ Python, so day-to-day development never touches Swift or the bundle.
 | `supervisor.py`, `supervisor.sh` | development runner that restarts `main.py` when a `.py` file changes |
 | `macos/` | the SwiftPM package for the host app (`Package.swift`, `Sources/AgentFarm`, `Info.plist`) |
 | `packaging/` | the PyInstaller spec and the hardened-runtime entitlements for the Python side |
-| `scripts/` | `build_app.sh`, `sign_app.sh`, `release.sh`, `fetch_sparkle_tools.sh`, `make_icon.swift` |
+| `scripts/` | `build_app.sh`, `sign_app.sh`, `release.sh`, `sparkle_tools.sh`, `make_icon.swift` |
 | `.github/workflows/release.yml` | the same release, run on GitHub's macOS runner |
 | `VERSION` | the single source of the version number |
 
@@ -137,8 +137,14 @@ update. Sparkle compares `CFBundleVersion`, which is `VERSION`, so bump it every
 - The **Sparkle signing key**. The public half is in `macos/Info.plist` (`SUPublicEDKey`)
   and the private half lives in the login keychain under the account `agent-farm`:
 
-      scripts/fetch_sparkle_tools.sh                       # downloads generate_keys, generate_appcast, sign_update
-      .sparkle-tools/<ver>/bin/generate_keys --account agent-farm        # prints the public key already in Info.plist
+      "$(scripts/sparkle_tools.sh)"/bin/generate_keys --account agent-farm -p   # prints the public key already in Info.plist
+
+  `scripts/sparkle_tools.sh` prints the folder of Sparkle's tools (`generate_keys`,
+  `generate_appcast`, `sign_update`): the ones SwiftPM fetched with the framework, under
+  `macos/.build/artifacts`, each checked against its pinned SHA-256 every time it is asked.
+  On a checkout never built it resolves the packages first. If it says to, delete all of
+  `macos/.build`: with only its `artifacts` folder gone, SwiftPM believes the download is still
+  there. Older releases downloaded the tools to `.sparkle-tools/`, which can be deleted.
 
   A new key pair means a new public key in `Info.plist`, and apps already installed will
   reject updates signed with it, so keep this one backed up:
