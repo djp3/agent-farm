@@ -1100,7 +1100,8 @@ def activity_text(bins: list[tuple[float, float]], width: int, now: float | None
 
 # The reports-to-agent-grange band, under agents at work and hour for hour with its stalks:
 # a mark per hour when reporting was on in it, colored by how the grange answered for most of
-# that time (see grange.History). Shown only when something was reported in the last day.
+# that time (see grange.History). Shown only while reporting is on and something was reported
+# in the last day; turned off, it goes, and the history stays for when it is turned on again.
 GRANGE_ROWS = 5                         # title, the band, axis, hour labels, blank
 GRANGE_FULL, GRANGE_PART, GRANGE_OFF = "●", "◐", "·"
 GRANGE_ON_FULL = 0.9                    # this share of an hour on counts as all of it
@@ -2252,8 +2253,8 @@ class AgentFarm(App):
         self.render_grange()
 
     def render_grange(self) -> None:
-        """The reports-to-agent-grange band under agents at work, on the same hours; hidden
-        when nothing was reported in them."""
+        """The reports-to-agent-grange band under agents at work, on the same hours; shown only
+        while reporting is on and something was reported in them."""
         try:
             band = self.query_one("#grange-chart", Static)
         except NoMatches:
@@ -2263,7 +2264,7 @@ class AgentFarm(App):
         now = time.time()
         starts = [a for a, _ in self._farm_bins]
         hours = grange_hours(self.grange_history.spans, starts, now)
-        show = any(on > 0 for on, _ in hours)
+        show = self.settings.grange_report and any(on > 0 for on, _ in hours)
         if show:
             _, _, gut = _activity_scale([v for _, v in self._farm_bins])
             band.update(grange_text(hours, starts, gut, self._grange_now(), self._usage_text_width()))
@@ -2274,8 +2275,6 @@ class AgentFarm(App):
     def _grange_now(self) -> tuple[str, str]:
         """The band's `now`: the sessions in the last list the grange took, or why none went."""
         r = self.grange.reply
-        if not self.settings.grange_report:
-            return "off", "dim"
         if not self.grange_owner():
             return "no login", YELLOW
         if r is None:
@@ -2605,6 +2604,7 @@ class AgentFarm(App):
         self.settings.save()
         log.info("reporting to agent-grange turned %s with g", "on" if on else "off")
         self._grange_tick()
+        self.render_grange()                   # the band goes with reporting, and comes back with it
         if not on:
             self.notify("Stopped reporting to agent-grange.", timeout=4)
         elif not self.grange_owner():

@@ -250,6 +250,10 @@ def test_with_nothing_reported_in_the_last_day_there_is_no_band(tmp_path, monkey
     _run(tmp_path, monkeypatch, steps, spans=[[old, old + 600, "accepted"]])
 
 
+REPORTING = dict(grange_report=True, grange_owner="octo-cat", grange_patterns=PROJ)
+ONE_SESSION = [Instance(pid=1, session_id="a", name="proj-1 docs", status="busy")]
+
+
 def test_reports_in_the_last_day_show_as_a_band_under_agents_at_work(tmp_path, monkeypatch):
     now = time.time()
 
@@ -261,17 +265,33 @@ def test_reports_in_the_last_day_show_as_a_band_under_agents_at_work(tmp_path, m
         assert band.region.height == main.GRANGE_ROWS
         drawn = str(band.render()).splitlines()
         assert drawn[0].startswith("reports to agent-grange") and "●" in drawn[1]
-        assert drawn[1].endswith("now  off")
+        assert drawn[1].endswith("now  1 session")
         assert band.tooltip == main.GRANGE_TIP
         scroll = app.query_one("#usage-scroll")              # the usage graph still meets the
         assert scroll.region.y == app.query_one("#expiring").region.y >= band.region.bottom   # panes on the left
 
+    _run(tmp_path, monkeypatch, steps, settings=Settings(**REPORTING), sessions=ONE_SESSION,
+         spans=[[now - 3 * 3600, now - 3600, "accepted"]])
+
+
+def test_with_reporting_off_there_is_no_band_whatever_was_reported(tmp_path, monkeypatch):
+    now = time.time()
+
+    async def steps(app, pilot):
+        await pilot.press("u")
+        await pilot.pause(0.3)
+        band, farm = app.query_one("#grange-chart"), app.query_one("#farm")
+        assert not band.display and app.grange_history.spans          # kept, not shown
+        scroll = app.query_one("#usage-scroll")
+        assert scroll.region.y == app.query_one("#expiring").region.y and farm.region.bottom <= scroll.region.y
+
     _run(tmp_path, monkeypatch, steps, spans=[[now - 3 * 3600, now - 3600, "accepted"]])
 
 
-def test_reporting_draws_its_band_and_turning_it_off_ends_the_span(tmp_path, monkeypatch, grange_pushes):
-    settings = Settings(grange_report=True, grange_owner="octo-cat", grange_patterns=PROJ)
-    sessions = [Instance(pid=1, session_id="a", name="proj-1 docs", status="busy")]
+def test_reporting_draws_its_band_and_turning_it_off_ends_the_span_and_hides_it(tmp_path, monkeypatch,
+                                                                              grange_pushes):
+    settings = Settings(**REPORTING)
+    sessions = ONE_SESSION
 
     async def steps(app, pilot):
         await pilot.press("u")
@@ -284,9 +304,39 @@ def test_reporting_draws_its_band_and_turning_it_off_ends_the_span(tmp_path, mon
         assert grange_pushes[-1][1] == []                    # the empty list that turning off sends
         assert len(app.grange_history.spans) == 1           # is not reporting
         assert app.grange_history.spans[0][1] <= time.time()
-        assert str(band.render()).splitlines()[1].endswith("now  off") and band.display
+        assert not band.display                              # off: the band goes at once
+        scroll = app.query_one("#usage-scroll")
+        assert scroll.region.y == app.query_one("#expiring").region.y   # and the charts give its rows back
         saved = json.loads((tmp_path / "grange-history.json").read_text())["spans"]
         assert [sp[2] for sp in saved] == ["accepted"]
         assert "proj" not in (tmp_path / "grange-history.json").read_text()
+        await pilot.press("g")
+        await pilot.pause(0.3)
+        assert band.display and str(band.render()).splitlines()[1].endswith("now  1 session")
+        assert [sp[2] for sp in app.grange_history.spans] == ["accepted", "accepted"]   # its day comes back with it
 
     _run(tmp_path, monkeypatch, steps, settings=settings, sessions=sessions)
+
+
+def test_the_settings_switch_takes_the_band_away_and_brings_it_back(tmp_path, monkeypatch, grange_pushes):
+    async def steps(app, pilot):
+        await pilot.press("u")
+        await pilot.pause(0.3)
+        band = app.query_one("#grange-chart")
+        assert band.display
+        await pilot.press("s")
+        await pilot.pause(0.3)
+        await pilot.click("#grange_report")                  # off
+        await pilot.pause(0.3)
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        assert not app.settings.grange_report and not band.display
+        await pilot.press("s")
+        await pilot.pause(0.3)
+        await pilot.click("#grange_report")                  # on again
+        await pilot.pause(0.3)
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        assert app.settings.grange_report and band.display
+
+    _run(tmp_path, monkeypatch, steps, settings=Settings(**REPORTING), sessions=ONE_SESSION)
