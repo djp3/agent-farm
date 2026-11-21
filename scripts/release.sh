@@ -19,10 +19,14 @@
 #     or NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY_FILE (App Store Connect API key; what CI uses)
 #   - the Sparkle key:  "$(scripts/sparkle_tools.sh)"/bin/generate_keys --account agent-farm -p
 #     or SPARKLE_PRIVATE_KEY_FILE pointing at an exported key (what CI uses)
+#     SPARKLE_PRIVATE_KEY_FILE must be a file: a release reads the key three times (to check
+#     it is the app's, to sign, to verify), so not "-" or a pipe, though Sparkle's tools take those.
 #   - gh logged in with push access to the repo
 set -euo pipefail
-# A key file named from where this was called must still be found once we have moved.
-case "${SPARKLE_PRIVATE_KEY_FILE:-}" in ""|/*) ;; *) SPARKLE_PRIVATE_KEY_FILE="$PWD/$SPARKLE_PRIVATE_KEY_FILE" ;; esac
+# A key file named from where this was called must still be found once we have moved. ("-",
+# which Sparkle's tools take for standard input, is no file's name: it is left as it is, and
+# scripts/check_sparkle_key.sh says why a release cannot use it.)
+case "${SPARKLE_PRIVATE_KEY_FILE:-}" in ""|/*|-) ;; *) SPARKLE_PRIVATE_KEY_FILE="$PWD/$SPARKLE_PRIVATE_KEY_FILE" ;; esac
 cd "$(dirname "$0")/.."
 
 VERSION=$(tr -d '[:space:]' < VERSION)

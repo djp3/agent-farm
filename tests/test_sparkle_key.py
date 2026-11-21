@@ -117,3 +117,15 @@ def test_only_the_public_half_of_a_key_file_is_ever_printed(checkout):
                           capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
     assert done.returncode == 0 and done.stdout.strip() == SEEDS_KEY
     assert base64.b64encode(SEED).decode() not in done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("named", ["-", "a pipe"])
+def test_a_key_that_can_be_read_only_once_is_refused_for_what_it_is(checkout, named):
+    """Sparkle's tools take "-" (standard input) or a pipe; a release reads the key three times."""
+    import os
+    if named == "a pipe":
+        named = str(checkout / "key.fifo")
+        os.mkfifo(named)
+    done = run(checkout, SPARKLE_PRIVATE_KEY_FILE=named)
+    assert done.returncode == 1 and "must be a file, not \"-\" or a pipe" in done.stderr
+    assert asked(checkout) == []

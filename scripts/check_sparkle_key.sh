@@ -19,6 +19,14 @@ cd "$(dirname "$0")/.."
 
 WANT=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" macos/Info.plist)
 if [ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]; then
+    # Sparkle's tools take a key on standard input ("-") or from a pipe, and a release cannot:
+    # it reads the key here, again to sign and again to verify, and a pipe is empty after the
+    # first. Said as that, not as a file that is missing.
+    if [ "$SPARKLE_PRIVATE_KEY_FILE" = "-" ] \
+            || { [ -e "$SPARKLE_PRIVATE_KEY_FILE" ] && [ ! -f "$SPARKLE_PRIVATE_KEY_FILE" ]; }; then
+        echo "SPARKLE_PRIVATE_KEY_FILE must be a file, not \"-\" or a pipe ($SPARKLE_PRIVATE_KEY_FILE): a release reads the key more than once. Export it to a file (generate_keys -x), or use the key in the keychain" >&2
+        exit 1
+    fi
     [ -f "$SPARKLE_PRIVATE_KEY_FILE" ] && [ -r "$SPARKLE_PRIVATE_KEY_FILE" ] \
         || { echo "SPARKLE_PRIVATE_KEY_FILE names no file that can be read: $SPARKLE_PRIVATE_KEY_FILE" >&2; exit 1; }
     HAVE=$(scripts/sparkle_public_key.sh "$SPARKLE_PRIVATE_KEY_FILE") \

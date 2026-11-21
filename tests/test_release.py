@@ -238,6 +238,12 @@ def test_a_key_file_named_from_where_the_script_was_called_is_still_found(releas
     assert gone.returncode == 1 and "names no file that can be read" in gone.stderr
 
 
+def test_a_key_on_standard_input_is_refused_and_not_taken_for_a_file_named_dash(release):
+    done = release.run(SPARKLE_PRIVATE_KEY_FILE="-")
+    assert done.returncode == 1 and "must be a file, not \"-\" or a pipe (-)" in done.stderr
+    assert not release.called("build_app") and release.nothing_left_this_mac()
+
+
 def test_a_key_file_that_is_not_the_apps_is_found_before_anything_is_built(release):
     (release.where / "exported.key").write_text(base64.b64encode(SEED).decode())
     done = release.run(SPARKLE_PRIVATE_KEY_FILE="exported.key")
