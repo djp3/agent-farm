@@ -449,6 +449,44 @@ def test_the_settings_switch_the_login_field_and_g_there(tmp_path, monkeypatch, 
     _run(app, steps)
 
 
+class _Keep(logging.Handler):
+    """What the app logs. The app's log stops at the agent_farm logger (setup_logging), so
+    caplog, on the root logger, never sees it."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.said = []
+
+    def emit(self, record):
+        self.said.append(record.getMessage())
+
+
+def test_the_login_is_saved_but_never_written_to_the_log(tmp_path, monkeypatch):
+    assert "hubot" not in repr(Settings(grange_owner="hubot"))
+    app, p = _app(tmp_path, monkeypatch, grange_report=True)
+
+    async def steps(app, pilot):
+        await pilot.press("s")
+        await pilot.pause(0.2)
+        app.screen.query_one("#grange-owner").focus()
+        await pilot.press(*"hubot", "enter")
+        await pilot.pause(0.3)
+        await pilot.click("#grange_report")                 # any later change logs the settings again
+        await pilot.pause(0.3)
+        await pilot.press("escape")
+
+    keep, farm = _Keep(), logging.getLogger("agent_farm")
+    farm.addHandler(keep)
+    try:
+        _run(app, steps)
+    finally:
+        farm.removeHandler(keep)
+    assert json.loads(p.read_text())["grange_owner"] == "hubot"
+    assert Settings.load().grange_owner == "hubot"
+    said = keep.said
+    assert sum("settings changed" in m for m in said) >= 2
+    assert not any("hubot" in m for m in said)
+
 def test_esc_in_the_middle_of_typing_a_login_closes_the_panel_cleanly(tmp_path, monkeypatch, grange_pushes):
     app, p = _app(tmp_path, monkeypatch, grange_report=True, grange_owner="octo-cat")
 
