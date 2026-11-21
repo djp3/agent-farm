@@ -407,8 +407,9 @@ background command counts as running until Claude Code reports the command finis
 still going counts up to now while its shell is running, and for at most ten minutes once
 its shell is gone.
 
-**Reports to agent-grange.** Under agents at work, when anything was reported in the last
-24 hours: one mark per hour, under that hour's stalk. ● means reporting was on all that hour
+**Reports to agent-grange.** Under agents at work, while reporting is on and anything was
+reported in the last 24 hours: one mark per hour, under that hour's stalk. Turn reporting off
+and the band goes; the hours it was on come back with it when you turn it on again. ● means reporting was on all that hour
 and ◐ part of it; a dim · means it was off. Green means the grange took the list, so the
 sessions were on the boards; yellow, that it was not running, out of date or did not
 answer; red, that it refused the list. Beside the marks, `now` is how many sessions the
