@@ -103,3 +103,17 @@ def test_the_app_looks_for_its_frameworks_in_one_place_or_is_not_built():
     checked = build.index('[ "$(rpaths)" = "$NEEDED" ] || {')
     assert checked < build.index('cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"') < build.index('scripts/sign_app.sh "$APP"')
     assert "@executable_path/../Frameworks" in read("macos", "Package.swift"), "where the app finds the framework it carries"
+
+
+def test_the_licenses_of_what_the_app_carries_go_with_every_copy():
+    """Sparkle's framework is carried whole and SwiftTerm is compiled in; each license asks
+    that its text go with every copy. The app only named them."""
+    build = read("scripts", "build_app.sh")
+    copied = build.index('cp "macos/.build/checkouts/$package/LICENSE" "$APP/Contents/Resources/licenses/$package.txt"')
+    assert "for package in Sparkle SwiftTerm; do" in build
+    assert build.index('|| { echo "no license text for $package') < copied < build.index('scripts/sign_app.sh "$APP"'), \
+        "there, or no build; and sealed by the signature"
+    built = ROOT / "dist" / "agent-farm.app" / "Contents" / "Resources" / "licenses"
+    if built.is_dir():                                   # an app was built here: look at it
+        assert "Permission is hereby granted" in (built / "Sparkle.txt").read_text()
+        assert "Miguel de Icaza" in (built / "SwiftTerm.txt").read_text()

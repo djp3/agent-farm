@@ -472,3 +472,7 @@ GPL-3.0-or-later. See [LICENSE](LICENSE).
 The app icon's rooster is from [Noto Emoji](https://github.com/googlefonts/noto-emoji),
 copyright Google LLC, used under its open license; see
 [NOTICE-noto-emoji.txt](macos/Resources/NOTICE-noto-emoji.txt).
+
+The Mac app carries [Sparkle](https://sparkle-project.org) and
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm), each under its own license, whose
+text is in the app at `Contents/Resources/licenses`.

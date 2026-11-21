@@ -74,6 +74,17 @@ cp -R dist/python/agent-farm-core "$APP/Contents/Resources/agent-farm-core"
 cp macos/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp macos/Resources/NOTICE-noto-emoji.txt "$APP/Contents/Resources/NOTICE-noto-emoji.txt"
+# Other people's programs inside the app come under licenses of their own. Those of the two
+# the Swift host links ask that their text go with every copy: Sparkle's (its framework is
+# carried whole) and SwiftTerm's (compiled into the executable). They are taken from the very
+# packages this copy was built from, so they are the licenses of the versions inside it. A
+# build that cannot find one stops here, before anything is signed.
+mkdir -p "$APP/Contents/Resources/licenses"
+for package in Sparkle SwiftTerm; do
+    [ -s "macos/.build/checkouts/$package/LICENSE" ] \
+        || { echo "no license text for $package under macos/.build/checkouts" >&2; exit 1; }
+    cp "macos/.build/checkouts/$package/LICENSE" "$APP/Contents/Resources/licenses/$package.txt"
+done
 sed "s/__VERSION__/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
 if [ "${WITH_UPDATES:-0}" != 1 ]; then
     # Only a release updates itself (WITH_UPDATES=1, which release.sh sets). A copy built here
