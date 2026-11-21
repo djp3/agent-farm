@@ -117,3 +117,54 @@ def test_the_licenses_of_what_the_app_carries_go_with_every_copy():
     if (built / "LICENSE-Sparkle").is_file():            # an app was built here: look at it
         assert "Permission is hereby granted" in (built / "LICENSE-Sparkle").read_text()
         assert "Miguel de Icaza" in (built / "LICENSE-SwiftTerm").read_text()
+
+
+def _rpath_step() -> str:
+    """build_app.sh's own lines that keep the one rpath, from rpaths() to the check after it."""
+    build = read("scripts", "build_app.sh").splitlines()
+    first = next(i for i, line in enumerate(build) if line.startswith("rpaths() {"))
+    last = next(i for i, line in enumerate(build) if line.startswith('[ "$(rpaths)" = "$NEEDED" ]'))
+    return "\n".join(build[first:last + 1])
+
+
+def _executable(tmp_path, *rpaths: str):
+    import shutil
+    import subprocess
+    if not shutil.which("cc"):
+        import pytest
+        pytest.skip("no C compiler to make an executable with rpaths")
+    exe = tmp_path / "exe"
+    flags = [f"-Wl,-rpath,{rp}" for rp in rpaths]
+    subprocess.run(["cc", "-x", "c", "-", "-o", str(exe), *flags], input=b"int main(void){return 0;}\n", check=True)
+    return exe
+
+
+def _keep_one_rpath(exe):
+    import subprocess
+    script = f'set -euo pipefail\nEXE="{exe}"\nNEEDED="@executable_path/../Frameworks"\n{_rpath_step()}\n'
+    return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
+
+
+def _rpaths_of(exe) -> list:
+    import subprocess
+    lines = subprocess.run(["otool", "-l", str(exe)], capture_output=True, text=True, check=True).stdout.splitlines()
+    return [lines[i + 2].split("path ", 1)[1].rsplit(" (offset", 1)[0]
+            for i, line in enumerate(lines) if line.strip() == "cmd LC_RPATH"]
+
+
+def test_an_rpath_with_a_space_in_it_is_taken_out_whole(tmp_path):
+    """otool prints "path /tmp/My Checkout/... (offset 12)": awk's $2 was "/tmp/My", which
+    install_name_tool could not find, and the build stopped."""
+    spaced = str(tmp_path / "My Checkout" / "macos" / ".build" / "release")
+    exe = _executable(tmp_path, "@loader_path", spaced, "@executable_path/../Frameworks")
+    assert spaced in _rpaths_of(exe)
+    done = _keep_one_rpath(exe)
+    assert done.returncode == 0, done.stderr
+    assert _rpaths_of(exe) == ["@executable_path/../Frameworks"]
+
+
+def test_without_the_rpath_it_needs_the_build_stops_and_says_where_it_looked(tmp_path):
+    exe = _executable(tmp_path, "@loader_path", str(tmp_path / "My Checkout"))
+    done = _keep_one_rpath(exe)
+    assert done.returncode == 1
+    assert "must look for its frameworks in @executable_path/../Frameworks alone" in done.stderr
