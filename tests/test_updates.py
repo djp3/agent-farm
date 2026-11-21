@@ -185,8 +185,8 @@ def _build_with(tmp_path, swift: str):
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "swift").write_text("#!/bin/sh\n" + swift)
     (tmp_path / "bin" / "swift").chmod(0o755)
-    script = f"set -euo pipefail\ncd {tmp_path}\n{_swift_build_step()}\necho went-on\n"
-    return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True,
+    script = f"set -euo pipefail\n{_swift_build_step()}\necho went-on\n"
+    return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, cwd=tmp_path,
                           env={"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin"})
 
 
