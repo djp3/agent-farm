@@ -2,6 +2,7 @@
 import pytest
 
 import collector
+import grange
 
 
 @pytest.fixture(autouse=True)
@@ -21,3 +22,28 @@ def no_real_settings(monkeypatch, tmp_path):
     names its own file with monkeypatch.setenv still gets that one."""
     monkeypatch.setenv("AGENT_FARM_SETTINGS", str(tmp_path / "settings.json"))
     monkeypatch.delenv("CLAUDE_MONITOR_SETTINGS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def grange_pushes(monkeypatch, tmp_path):
+    """No test reaches the agent-grange on this Mac, whose port is the default one: an app with
+    reporting on would put made-up sessions on the team's boards. The pushes are kept here,
+    as (port, agents), for a test that asks for this fixture by name, and each is accepted.
+    gh's sign-in is read from an empty folder, so the owner is only what a test sets. The
+    tests of the real push hold their own reference to grange.put_farm, taken at import."""
+    pushes = []
+
+    def accept(port, agents):
+        pushes.append((port, agents))
+        return grange.Reply(204)
+
+    monkeypatch.setattr(grange, "put_farm", accept)
+    monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "gh"))
+    return pushes
+
+
+@pytest.fixture(autouse=True)
+def grange_fresh_matching(monkeypatch):
+    """Each test starts with no remembered pattern answers, so one test's timing (a slow
+    pattern running out of time, say) is never another's."""
+    monkeypatch.setattr(grange, "_decided", {})

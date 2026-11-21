@@ -8,22 +8,41 @@ anchored with ^ or $.
 
 samples() draws a few strings a pattern matches, for the settings panel to show beside it.
 
+The push (agent-grange's docs/requirements.md, 4.1 and 5.1): PUT http://127.0.0.1:<port>/v1/farm
+with {"agents": [{"owner", "name", "state"}, ...]}, the whole list each time, on every change
+and at least every 30 seconds; after 60 seconds without one the grange marks this farm stale
+on every teammate's board. Only those three strings leave the machine. The owner is the
+user's GitHub login, the name and state are the session's as the monitor shows them.
+report() picks the entries on the UI thread (reported() needs its timer there), Reporter
+decides when a push is due, and put_farm() sends it from a worker thread.
+
 Python's re has no time limit, and some patterns backtrack catastrophically: (a+)+b on a
 long run of a's tries every way to split it. So every search here runs under a timer
 (_time_limit): a pattern's examples get TIME_LIMIT_S in all, and so does each name it is
 checked against. re's matching loop checks for signals, so the timer stops a runaway
 search; a pattern that runs out of time has no examples, and counts as not matching.
+Each name's answer for a pattern is remembered, running out of time included, so a slow
+pattern costs its time once per name rather than on every snapshot; and report() spends at
+most MATCH_BUDGET_S a snapshot on names it hasn't checked yet, leaving the rest for the
+next one, so a burst of new names never holds the screen for long.
 """
 from __future__ import annotations
 
+import http.client
+import json
 import logging
+import os
 import random
 import re
 import signal
+import socket
 import string
 import threading
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from re import _constants as sre      # the parse tree re builds; stable in practice, and
 from re import _parser as sre_parse   # samples() gives up quietly if it ever changes
@@ -34,6 +53,18 @@ SAMPLE_MAX = 40         # characters in one sample; a longer draw is dropped
 REPEAT_EXTRA = 3        # a repeat draws at most this many past its minimum
 TIME_LIMIT_S = 0.25     # for one pattern's examples, and for checking one name against it
 DRAW_STEPS = 5000       # pieces of a pattern the drawer may visit, across all of its draws
+MATCH_BUDGET_S = 0.1    # report()'s time for names not checked yet; the rest wait a snapshot
+DECIDED_MAX = 4096      # remembered (pattern, name) answers; past it they are all forgotten
+
+HOST = "127.0.0.1"      # the grange listens on loopback only
+DEFAULT_PORT = 7788     # GRANGE_PORT in the grange's .env
+HEARTBEAT_S = 20.0      # the grange asks for a push at least every 30 s and calls 60 s stale
+TIMEOUT_S = 3.0         # for one push in all: connecting, sending and the whole answer
+FIELD_MAX = 256         # bytes in each string the grange accepts
+AGENTS_MAX = 200        # entries in one push
+REPLY_MAX = 64 * 1024   # bytes of an answer read, for its {"error": ...}
+# A GitHub login: letters, digits and single hyphens, not at either end, at most 39 characters.
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
 
 log = logging.getLogger("agent_farm.grange")
 
@@ -105,28 +136,257 @@ def _time_limit(seconds: float):
 
 
 _slow_warned: set[str] = set()
+_decided: dict[tuple[str, str], bool] = {}      # (pattern, name) -> matched; too slow is False
+
+
+def _search(pattern: str, rx: re.Pattern, name: str) -> bool:
+    """Whether rx finds a match in the name within TIME_LIMIT_S; too slow counts as no, and the
+    pattern is logged once, without the name. Remembered, so each name costs this once."""
+    key = (pattern, name)
+    hit = _decided.get(key)
+    if hit is not None:
+        return hit
+    try:
+        with _time_limit(TIME_LIMIT_S):
+            hit = rx.search(name) is not None
+    except _TooSlow:
+        if not _on_main_thread():
+            return False                # it couldn't be timed here; the main thread may manage it
+        if pattern not in _slow_warned:
+            _slow_warned.add(pattern)
+            log.warning("agent-grange pattern %r took over %.2fs on a session name; "
+                        "counted as not matching", pattern, TIME_LIMIT_S)
+        hit = False
+    if len(_decided) >= DECIDED_MAX:
+        _decided.clear()
+    _decided[key] = hit
+    return hit
+
+
+def _matches(name: str, entries: list[dict], deadline: float | None = None) -> bool | None:
+    """Whether a pattern that is on matches the name; None when the answer needs a search not
+    made yet and the deadline (time.monotonic()) has passed."""
+    for e in entries:
+        rx = _compiled(e["pattern"]) if e["enabled"] else None
+        if rx is None:
+            continue
+        if deadline is not None and (e["pattern"], name) not in _decided and time.monotonic() >= deadline:
+            return None
+        if _search(e["pattern"], rx, name):
+            return True
+    return False
 
 
 def reported(name: str, entries: list[dict]) -> bool:
     """Whether a session with this name goes to agent-grange: a pattern that is on matches it.
     A pattern that takes longer than TIME_LIMIT_S on the name counts as not matching, so a
     slow pattern never reports a session by accident (it is logged once, without the name)."""
-    for e in entries:
-        rx = _compiled(e["pattern"]) if e["enabled"] else None
-        if rx is None:
-            continue
-        try:
-            with _time_limit(TIME_LIMIT_S):
-                hit = rx.search(name) is not None
-        except _TooSlow:
-            if e["pattern"] not in _slow_warned:
-                _slow_warned.add(e["pattern"])
-                log.warning("agent-grange pattern %r took over %.2fs on a session name; "
-                            "counted as not matching", e["pattern"], TIME_LIMIT_S)
-            continue
-        if hit:
-            return True
-    return False
+    return _matches(name, entries) is True
+
+
+# ---- the push --------------------------------------------------------------------
+
+def gh_login() -> str:
+    """The GitHub login gh is signed in with on github.com, or "" when there is none. Only
+    the `user:` line under github.com in gh's hosts.yml is read: the file can hold a token
+    too, and no other line is kept or logged."""
+    base = os.environ.get("GH_CONFIG_DIR") or \
+        Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gh"
+    try:
+        text = (Path(base) / "hosts.yml").read_text(errors="replace")
+    except (OSError, ValueError):
+        return ""
+    host = ""
+    for line in text.splitlines():
+        if line[:1] not in ("", " ", "\t", "#"):
+            host = line.split(":", 1)[0].strip().strip("\"'")
+        elif host == "github.com":
+            m = re.fullmatch(r"[ ]{2,4}user:\s*([\"']?)([^\"'\s]+)\1\s*", line)
+            if m and LOGIN.fullmatch(m[2]):
+                return m[2]
+    return ""
+
+
+def _fit(s: str) -> str:
+    """s as valid text of at most FIELD_MAX bytes of UTF-8, cut at a character boundary. A lone
+    surrogate (a name taken from bytes that weren't UTF-8) becomes "?": it can't be encoded,
+    and the push would fail on every try."""
+    return s.encode("utf-8", "replace")[:FIELD_MAX].decode("utf-8", "ignore")
+
+
+def report(sessions, entries: list[dict], owner: str,
+           budget: float = MATCH_BUDGET_S) -> tuple[list[dict], int]:
+    """The push's entries: one per session whose name a pattern that is on matches, in the
+    order given, each with exactly owner, name and state; and how many sessions matched.
+    Past AGENTS_MAX the rest are left out, since the grange would refuse the whole list.
+    A session without a name is never sent: a board finds the pull request from the name.
+    Names not checked yet get `budget` seconds in all (and a slow search its TIME_LIMIT_S
+    past it); one still unchecked then is left out until a later call has checked it.
+    `sessions` are anything with .name and .status. Call it on the main thread (reported())."""
+    deadline = time.monotonic() + budget
+    picked = [s for s in sessions if s.name and _matches(s.name, entries, deadline)]
+    agents = [{"owner": _fit(owner), "name": _fit(s.name), "state": _fit(s.status)}
+              for s in picked[:AGENTS_MAX]]
+    return agents, len(picked)
+
+
+@dataclass(frozen=True)
+class Reply:
+    """How one push went: the HTTP status, or None when nothing answered, and what went wrong
+    in a few words ("" when the grange took the list)."""
+    code: int | None
+    problem: str = ""
+
+    @property
+    def kind(self) -> str:
+        """The reply's sort, for the status line; the log notes only a change of kind."""
+        if self.code == 204:
+            return "accepted"
+        if self.code == 503:
+            return "out of date"
+        if self.code is None:
+            return "not running" if self.problem == "not running" else "no answer"
+        return "refused"
+
+
+def _error_in(data: bytes) -> str:
+    """The "error" of a {"error": "..."} answer, made safe to show on one line."""
+    try:
+        e = json.loads(data).get("error")
+    except Exception:
+        return ""
+    return " ".join(e.split())[:200] if isinstance(e, str) else ""
+
+
+def put_farm(port: int, agents: list[dict]) -> Reply:
+    """Send the list to the grange on this Mac and say how it went. Never raises: a grange that
+    isn't running, is out of date or refuses the list is an answer like any other, and the
+    next push goes on schedule. http.client rather than urllib, so no proxy setting can route
+    it anywhere else; a bytes body always goes with Content-Length, never chunked.
+
+    TIMEOUT_S bounds the whole push, not just each wait: a timer shuts the connection down
+    when it runs out, which wakes a read that is blocked on it, so a grange that answers a
+    byte at a time can't hold the push (and so every push after it, one being out at a time)."""
+    body = json.dumps({"agents": agents}, ensure_ascii=False, separators=(",", ":")).encode()
+    conn = http.client.HTTPConnection(HOST, port, timeout=TIMEOUT_S)
+    late, lock = threading.Event(), threading.Lock()
+
+    def cut() -> None:
+        with lock:                      # never on a socket the finally below has closed
+            late.set()
+            if conn.sock is not None:
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    timer = threading.Timer(TIMEOUT_S, cut)
+    timer.daemon = True
+    timer.start()
+    try:
+        conn.request("PUT", "/v1/farm", body=body,
+                     headers={"Content-Type": "application/json", "Connection": "close"})
+        if late.is_set():               # ran out while connecting, before there was a socket to cut
+            raise TimeoutError
+        r = conn.getresponse()
+        data = r.read(REPLY_MAX)
+    except ConnectionRefusedError:
+        return Reply(None, "not running")
+    except (OSError, http.client.HTTPException, ValueError) as e:   # ValueError: a port out of range
+        if late.is_set() or isinstance(e, TimeoutError):
+            return Reply(None, f"no answer in {TIMEOUT_S:g} s")
+        return Reply(None, getattr(e, "strerror", None) or type(e).__name__)
+    finally:
+        with lock:
+            timer.cancel()
+            conn.close()
+    if r.status == 204:
+        return Reply(204)
+    return Reply(r.status, _error_in(data) or r.reason or "")
+
+
+class Reporter:
+    """When to push, decided on the UI thread. Give next_push() each snapshot's entries (None
+    while reporting is off): it returns the list to send now, or None. Give done() the answer.
+
+    One push is out at a time, so they reach the grange in the order they were made. A push
+    is due when the list changed in any way but order (the grange ignores order), or
+    HEARTBEAT_S after the last one, answered or not: a grange that is down is tried again on
+    that schedule. The heartbeat rides on the snapshots, so a monitor that stops taking them
+    stops pushing, and the grange marks it stale as it should. Turning reporting off sends
+    one empty list, so the boards drop these sessions at once instead of keeping them
+    flagged stale."""
+
+    def __init__(self) -> None:
+        self.sent: tuple | None = None      # the last list sent, as _key(); None while off
+        self.last_try = float("-inf")
+        self.out = False                    # a push is on its way
+        self.reply: Reply | None = None     # the last answer, and when it came
+        self.reply_at = 0.0
+        self.count = 0                      # entries in the last push answered
+        self.matched = 0                    # sessions that matched for it (more past AGENTS_MAX)
+        self._out_counts = (0, 0)           # the same for the push on its way, until its answer
+
+    @staticmethod
+    def _key(agents: list[dict]) -> tuple:
+        return tuple(sorted((a["owner"], a["name"], a["state"]) for a in agents))
+
+    def next_push(self, agents: list[dict] | None, now: float, matched: int = 0) -> list[dict] | None:
+        if self.out:
+            return None
+        if agents is None:                  # off
+            if not self.sent:               # nothing of ours on the boards
+                self.sent = None
+                return None
+            self.sent, agents, matched = None, [], 0
+        else:
+            key = self._key(agents)
+            if key == self.sent and now - self.last_try < HEARTBEAT_S:
+                return None
+            if self.sent is None:           # just turned on: an answer from before says nothing now
+                self.reply = None
+            self.sent = key
+        self.out, self.last_try = True, now
+        self._out_counts = (len(agents), max(matched, len(agents)))
+        return agents
+
+    def done(self, reply: Reply, now: float, port: int) -> None:
+        self.out = False
+        if self.reply is None or reply.kind != self.reply.kind:
+            if reply.kind == "accepted":
+                log.info("agent-grange on port %d took the report", port)
+            elif reply.kind == "not running":
+                log.info("no agent-grange on port %d; trying every %g s", port, HEARTBEAT_S)
+            elif reply.kind == "out of date":
+                log.warning("agent-grange on port %d is out of date (503) until make update", port)
+            else:
+                log.warning("agent-grange on port %d: %s %s", port, reply.code or "", reply.problem)
+        self.reply, self.reply_at = reply, now
+        self.count, self.matched = self._out_counts     # the words describe this push, answered
+
+    def words(self, on: bool, owner: str, port: int, now: float) -> str:
+        """The state of reporting in a sentence, for the settings panel and the fleet tooltip."""
+        if not on:
+            return "Off: nothing is sent."
+        if not owner:
+            return "On, but nothing is sent until there is a GitHub login to send as the owner."
+        r, again = self.reply, f"Trying again every {HEARTBEAT_S:g} s."
+        if r is None:
+            return f"On: sending to port {port}…"
+        if r.kind == "accepted":
+            age = now - self.reply_at
+            s = (f"On: {self.count} session{'' if self.count == 1 else 's'} sent to port {port}, "
+                 f"accepted {'just now' if age < 2 else f'{age:.0f} s ago'}.")
+            if self.matched > self.count:
+                s += f" {self.matched - self.count} more match, past the grange's limit of {AGENTS_MAX}."
+            return s
+        if r.kind == "not running":
+            return f"On, but no agent-grange is running on port {port} (make up starts it). {again}"
+        if r.kind == "out of date":
+            return f"On, but the grange takes nothing until make update brings it up to date. {again}"
+        if r.kind == "refused":
+            return f"On, but the grange refused the list ({r.code}: {r.problem}). {again}"
+        return f"On, but the push to port {port} failed ({r.problem}). {again}"
 
 
 class _GiveUp(Exception):
