@@ -111,6 +111,61 @@ def test_a_growing_span_is_saved_at_most_once_a_minute_and_the_rest_on_quit(tmp_
     assert json.loads(p.read_text())["spans"] == [[round(now), round(now + 2 * H), "accepted"]]
 
 
+def kinds_in(p) -> list:
+    return [sp[2] for sp in json.loads(p.read_text())["spans"]]
+
+
+def test_a_span_that_grows_for_more_than_a_day_lets_the_one_before_it_go(tmp_path):
+    """Spans were only dropped when a new one began: the answer before a day of the same
+    answers stayed, in memory and in the file."""
+    p = tmp_path / "grange-history.json"
+    start = time.time() - 26 * 3600
+    h = grange.History(p)
+    h.answered(start, "accepted")
+    for k in range(1, int(25.5 * 3600 / H)):             # then 25.5 hours of the same refusal
+        h.answered(start + k * H, "refused")
+    assert [sp[2] for sp in h.spans] == ["refused"]
+    assert kinds_in(p) == ["refused"]
+
+
+def test_while_reporting_is_off_what_falls_out_of_the_day_goes(tmp_path):
+    p = tmp_path / "grange-history.json"
+    now = time.time()
+    h = grange.History(p)
+    h.answered(now - 30 * 3600, "accepted")
+    h.stopped(now - 30 * 3600 + 5)                        # turned off, and left off
+    assert kinds_in(p) == ["accepted"]
+    h.stopped(now)                                         # a snapshot, 30 hours on
+    assert h.spans == [] and kinds_in(p) == []
+
+
+def test_dropping_old_spans_keeps_to_the_save_throttle(tmp_path):
+    p = tmp_path / "grange-history.json"
+    now = time.time()
+    h = grange.History(p)
+    h.answered(now - 25 * 3600 - 65, "accepted")
+    h.stopped(now - 25 * 3600 - 60)                        # it ended a day and a minute ago
+    h.answered(now - 120, "refused")
+    h.stopped(now - 100)                                   # closed and saved, 100 s ago
+    h.stopped(now - 70)
+    assert kinds_in(p) == ["accepted", "refused"]
+    h.stopped(now - 50)                                     # 50 s after the save: the first falls
+    assert [sp[2] for sp in h.spans] == ["refused"]        # out of the day, and waits for the file
+    assert kinds_in(p) == ["accepted", "refused"]
+    h.stopped(now - 39)                                     # a minute after the save
+    assert kinds_in(p) == ["refused"]
+
+
+def test_a_file_read_with_old_spans_in_it_loses_them_at_its_next_save(tmp_path):
+    p = tmp_path / "grange-history.json"
+    now = time.time()
+    p.write_text(json.dumps({"spans": [[now - 30 * 3600, now - 30 * 3600 + 20, "accepted"],
+                                       [now - 600, now - 580, "refused"]], "closed": True}))
+    h = grange.History(p)
+    assert [sp[2] for sp in h.spans] == ["refused"]
+    h.stopped(now)                                          # reporting still off
+    assert kinds_in(p) == ["refused"]
+
 def test_a_damaged_file_starts_a_new_history_and_bad_entries_are_dropped(tmp_path, caplog):
     p = tmp_path / "grange-history.json"
     p.write_text("{not json")

@@ -429,7 +429,7 @@ class History:
                 self.spans.append([float(sp[0]), float(sp[1]), sp[2]])
         self.spans.sort(key=lambda sp: sp[0])
         self.closed = data.get("closed") is True
-        self._prune(time.time())
+        self._unsaved = self._prune(time.time())     # the file loses them at its next save too
 
     def answered(self, now: float, kind: str) -> bool:
         """A push made while reporting was on got this answer. True when a span began or ended,
@@ -438,6 +438,7 @@ class History:
         if last is not None and not self.closed and last[0] <= now <= last[1] + HEARTBEAT_S:
             if last[2] == kind:
                 last[1] = now + HEARTBEAT_S
+                self._prune(now)                 # a span can grow for days: what it outlives goes
                 self._save(now)
                 return False
             last[1] = now
@@ -453,6 +454,10 @@ class History:
         True the first time, when the chart may change."""
         last = self.spans[-1] if self.spans else None
         if last is None or self.closed:
+            # Called every snapshot while reporting is off: the day goes on passing, and what
+            # falls out of it goes, from the file too, at the throttle's pace.
+            if self._prune(now) or self._unsaved:
+                self._save(now)
             return False
         last[1] = max(last[0], min(last[1], now))   # a heartbeat a little late has already run out
         self.closed = True
@@ -464,8 +469,12 @@ class History:
         if self._unsaved:
             self._save(time.time(), force=True)
 
-    def _prune(self, now: float) -> None:
-        self.spans = [sp for sp in self.spans if sp[1] > now - HISTORY_KEEP_S]
+    def _prune(self, now: float) -> bool:
+        """Drop the spans that ended more than HISTORY_KEEP_S ago. True when any did."""
+        kept = [sp for sp in self.spans if sp[1] > now - HISTORY_KEEP_S]
+        dropped = len(kept) < len(self.spans)
+        self.spans = kept
+        return dropped
 
     def _save(self, now: float, force: bool = False) -> None:
         if self.path is None:
