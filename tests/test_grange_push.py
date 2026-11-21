@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -67,6 +68,40 @@ def test_past_200_matches_the_rest_are_left_out_and_counted():
     assert len(agents) == grange.AGENTS_MAX and matched == 230
     assert agents[0]["name"] == "proj-0" and agents[-1]["name"] == "proj-199"
 
+
+SLOW = r"(a+)+b"                    # backtracks catastrophically on a long run of a's
+
+
+def test_a_slow_pattern_costs_its_time_once_per_name_not_every_snapshot(monkeypatch):
+    monkeypatch.setattr(grange, "TIME_LIMIT_S", 0.05)
+    rules = [{"pattern": SLOW, "enabled": True}, {"pattern": "^zebra", "enabled": True}]
+    sessions = [session("a" * 40 + f"-{i}") for i in range(4)] + [session("zebra-1"), session("aab")]
+    began = time.monotonic()
+    agents, _ = grange.report(sessions, rules, "octo-cat", budget=10)
+    assert time.monotonic() - began >= 4 * grange.TIME_LIMIT_S      # each slow name ran out once
+    assert [a["name"] for a in agents] == ["zebra-1", "aab"]
+    began = time.monotonic()
+    for _ in range(5):                                              # the next snapshots
+        assert grange.report(sessions, rules, "octo-cat", budget=10)[0] == agents
+    assert time.monotonic() - began < grange.TIME_LIMIT_S           # nothing ran out again
+    rules[1]["pattern"] = "^aa"                                     # an edited pattern is checked anew
+    assert [a["name"] for a in grange.report(sessions, rules, "octo-cat")[0]] == \
+        [s.name for s in sessions[:4]] + ["aab"]
+
+
+def test_a_burst_of_new_names_is_checked_over_several_snapshots_instead_of_freezing(monkeypatch):
+    monkeypatch.setattr(grange, "TIME_LIMIT_S", 0.05)
+    rules = [{"pattern": SLOW, "enabled": True}, {"pattern": "^zebra", "enabled": True}]
+    sessions = [session("a" * 40 + f"-{i}") for i in range(12)] + [session("zebra-1")]
+    budget, calls, agents = 0.1, 0, None
+    while agents != [{"owner": "octo-cat", "name": "zebra-1", "state": "busy"}]:
+        began = time.monotonic()
+        agents, _ = grange.report(sessions, rules, "octo-cat", budget=budget)
+        assert time.monotonic() - began < budget + grange.TIME_LIMIT_S + 0.1   # one snapshot's share
+        calls += 1
+        assert calls < 20
+    assert calls > 1                    # 12 slow names were more than one snapshot's share
+    assert agents == grange.report(sessions, rules, "octo-cat", budget=0)[0]   # all remembered now
 
 # ---- the owner from gh -----------------------------------------------------------------
 

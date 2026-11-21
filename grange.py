@@ -21,6 +21,10 @@ long run of a's tries every way to split it. So every search here runs under a t
 (_time_limit): a pattern's examples get TIME_LIMIT_S in all, and so does each name it is
 checked against. re's matching loop checks for signals, so the timer stops a runaway
 search; a pattern that runs out of time has no examples, and counts as not matching.
+Each name's answer for a pattern is remembered, running out of time included, so a slow
+pattern costs its time once per name rather than on every snapshot; and report() spends at
+most MATCH_BUDGET_S a snapshot on names it hasn't checked yet, leaving the rest for the
+next one, so a burst of new names never holds the screen for long.
 """
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ import re
 import signal
 import string
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -47,6 +52,8 @@ SAMPLE_MAX = 40         # characters in one sample; a longer draw is dropped
 REPEAT_EXTRA = 3        # a repeat draws at most this many past its minimum
 TIME_LIMIT_S = 0.25     # for one pattern's examples, and for checking one name against it
 DRAW_STEPS = 5000       # pieces of a pattern the drawer may visit, across all of its draws
+MATCH_BUDGET_S = 0.1    # report()'s time for names not checked yet; the rest wait a snapshot
+DECIDED_MAX = 4096      # remembered (pattern, name) answers; past it they are all forgotten
 
 HOST = "127.0.0.1"      # the grange listens on loopback only
 DEFAULT_PORT = 7788     # GRANGE_PORT in the grange's .env
@@ -128,28 +135,52 @@ def _time_limit(seconds: float):
 
 
 _slow_warned: set[str] = set()
+_decided: dict[tuple[str, str], bool] = {}      # (pattern, name) -> matched; too slow is False
+
+
+def _search(pattern: str, rx: re.Pattern, name: str) -> bool:
+    """Whether rx finds a match in the name within TIME_LIMIT_S; too slow counts as no, and the
+    pattern is logged once, without the name. Remembered, so each name costs this once."""
+    key = (pattern, name)
+    hit = _decided.get(key)
+    if hit is not None:
+        return hit
+    try:
+        with _time_limit(TIME_LIMIT_S):
+            hit = rx.search(name) is not None
+    except _TooSlow:
+        if not _on_main_thread():
+            return False                # it couldn't be timed here; the main thread may manage it
+        if pattern not in _slow_warned:
+            _slow_warned.add(pattern)
+            log.warning("agent-grange pattern %r took over %.2fs on a session name; "
+                        "counted as not matching", pattern, TIME_LIMIT_S)
+        hit = False
+    if len(_decided) >= DECIDED_MAX:
+        _decided.clear()
+    _decided[key] = hit
+    return hit
+
+
+def _matches(name: str, entries: list[dict], deadline: float | None = None) -> bool | None:
+    """Whether a pattern that is on matches the name; None when the answer needs a search not
+    made yet and the deadline (time.monotonic()) has passed."""
+    for e in entries:
+        rx = _compiled(e["pattern"]) if e["enabled"] else None
+        if rx is None:
+            continue
+        if deadline is not None and (e["pattern"], name) not in _decided and time.monotonic() >= deadline:
+            return None
+        if _search(e["pattern"], rx, name):
+            return True
+    return False
 
 
 def reported(name: str, entries: list[dict]) -> bool:
     """Whether a session with this name goes to agent-grange: a pattern that is on matches it.
     A pattern that takes longer than TIME_LIMIT_S on the name counts as not matching, so a
     slow pattern never reports a session by accident (it is logged once, without the name)."""
-    for e in entries:
-        rx = _compiled(e["pattern"]) if e["enabled"] else None
-        if rx is None:
-            continue
-        try:
-            with _time_limit(TIME_LIMIT_S):
-                hit = rx.search(name) is not None
-        except _TooSlow:
-            if e["pattern"] not in _slow_warned:
-                _slow_warned.add(e["pattern"])
-                log.warning("agent-grange pattern %r took over %.2fs on a session name; "
-                            "counted as not matching", e["pattern"], TIME_LIMIT_S)
-            continue
-        if hit:
-            return True
-    return False
+    return _matches(name, entries) is True
 
 
 # ---- the push --------------------------------------------------------------------
@@ -182,13 +213,17 @@ def _fit(s: str) -> str:
     return s.encode("utf-8", "replace")[:FIELD_MAX].decode("utf-8", "ignore")
 
 
-def report(sessions, entries: list[dict], owner: str) -> tuple[list[dict], int]:
+def report(sessions, entries: list[dict], owner: str,
+           budget: float = MATCH_BUDGET_S) -> tuple[list[dict], int]:
     """The push's entries: one per session whose name a pattern that is on matches, in the
     order given, each with exactly owner, name and state; and how many sessions matched.
     Past AGENTS_MAX the rest are left out, since the grange would refuse the whole list.
     A session without a name is never sent: a board finds the pull request from the name.
+    Names not checked yet get `budget` seconds in all (and a slow search its TIME_LIMIT_S
+    past it); one still unchecked then is left out until a later call has checked it.
     `sessions` are anything with .name and .status. Call it on the main thread (reported())."""
-    picked = [s for s in sessions if s.name and reported(s.name, entries)]
+    deadline = time.monotonic() + budget
+    picked = [s for s in sessions if s.name and _matches(s.name, entries, deadline)]
     agents = [{"owner": _fit(owner), "name": _fit(s.name), "state": _fit(s.status)}
               for s in picked[:AGENTS_MAX]]
     return agents, len(picked)

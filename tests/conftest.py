@@ -40,3 +40,10 @@ def grange_pushes(monkeypatch, tmp_path):
     monkeypatch.setattr(grange, "put_farm", accept)
     monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "gh"))
     return pushes
+
+
+@pytest.fixture(autouse=True)
+def grange_fresh_matching(monkeypatch):
+    """Each test starts with no remembered pattern answers, so one test's timing (a slow
+    pattern running out of time, say) is never another's."""
+    monkeypatch.setattr(grange, "_decided", {})
