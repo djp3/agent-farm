@@ -2,23 +2,16 @@
 would sign with the one installed copies trust? These run it against a generate_keys of their
 own, so no keychain is asked anything."""
 import base64
-import plistlib
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from sparkle_standins import GENERATE_KEYS, shim
+from sparkle_standins import ANOTHER_KEY, GENERATE_KEYS, SEED, SEEDS_KEY, THE_APPS_KEY, shim, trusting
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "check_sparkle_key.sh"
-with open(ROOT / "macos" / "Info.plist", "rb") as _f:
-    THE_APPS_KEY = plistlib.load(_f)["SUPublicEDKey"]
-ANOTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="        # made up: thirty-two zero bytes
-# RFC 8032's first Ed25519 test vector: a published seed and the public key it makes.
-SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-SEEDS_KEY = base64.b64encode(bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")).decode()
 
 @pytest.fixture
 def checkout(tmp_path):
@@ -31,9 +24,12 @@ def checkout(tmp_path):
     return tmp_path
 
 
-def run(checkout: Path, **env) -> subprocess.CompletedProcess:
+def run(checkout: Path, *key, **env) -> subprocess.CompletedProcess:
+    """The check, asked about the key a release names: the keychain's under this app's account
+    unless `key` says otherwise ("--account", name or "--ed-key-file", path)."""
     env = {"PATH": "/usr/bin:/bin", "ASKED": str(checkout / "asked"), **env}
-    return subprocess.run(["/bin/bash", str(checkout / "scripts" / SCRIPT.name), str(checkout / "tools")],
+    args = list(key) or ["--account", "agent-farm"]
+    return subprocess.run(["/bin/bash", str(checkout / "scripts" / SCRIPT.name), str(checkout / "tools"), *args],
                           capture_output=True, text=True, env=env)
 
 
@@ -53,7 +49,7 @@ def test_the_keychain_is_asked_by_this_apps_account_and_only_for_the_public_half
     without an account, generate_keys answers with that one."""
     run(checkout, ANSWER=THE_APPS_KEY)
     assert asked(checkout) == ["--account agent-farm -p"]
-    run(checkout, ANSWER=THE_APPS_KEY, SPARKLE_ACCOUNT="another-account")
+    run(checkout, "--account", "another-account", ANSWER=THE_APPS_KEY)
     assert asked(checkout)[-1] == "--account another-account -p"
 
 
@@ -68,27 +64,17 @@ def test_no_key_under_the_account_stops_the_release(checkout):
     assert done.returncode == 1 and "no Sparkle key in the login keychain under the account 'agent-farm'" in done.stderr
 
 
-def trusting(checkout: Path, key: str) -> None:
-    """The checkout's app trusts this public key."""
-    plist = checkout / "macos" / "Info.plist"
-    with open(plist, "rb") as f:
-        data = plistlib.load(f)
-    data["SUPublicEDKey"] = key
-    with open(plist, "wb") as f:
-        plistlib.dump(data, f)
-
-
 def test_a_key_file_is_held_to_the_apps_key_and_the_keychain_left_alone(checkout):
     """What the GitHub Actions release signs with. Its public half is worked out from it and
     compared, as the keychain's is."""
     key = checkout / "exported.key"
     key.write_text(base64.b64encode(SEED).decode() + "\n")
     trusting(checkout, SEEDS_KEY)
-    done = run(checkout, SPARKLE_PRIVATE_KEY_FILE=str(key))
+    done = run(checkout, "--ed-key-file", str(key))
     assert done.returncode == 0, done.stderr
     assert str(key) in done.stdout and asked(checkout) == []
     trusting(checkout, THE_APPS_KEY)
-    done = run(checkout, SPARKLE_PRIVATE_KEY_FILE=str(key))
+    done = run(checkout, "--ed-key-file", str(key))
     assert done.returncode == 1 and "is not the one in macos/Info.plist" in done.stderr and asked(checkout) == []
 
 
@@ -97,16 +83,16 @@ def test_a_key_file_in_sparkles_older_form_is_read_too(checkout):
     key = checkout / "exported.key"
     key.write_text(base64.b64encode(bytes(64) + base64.b64decode(SEEDS_KEY)).decode())
     trusting(checkout, SEEDS_KEY)
-    assert run(checkout, SPARKLE_PRIVATE_KEY_FILE=str(key)).returncode == 0
+    assert run(checkout, "--ed-key-file", str(key)).returncode == 0
 
 
 def test_a_key_file_that_is_no_key_or_no_file_stops_the_release(checkout):
     key = checkout / "exported.key"
     key.write_text("made up")
-    done = run(checkout, SPARKLE_PRIVATE_KEY_FILE=str(key))
+    done = run(checkout, "--ed-key-file", str(key))
     assert done.returncode == 1 and "does not hold a Sparkle key" in done.stderr
     assert str(SEED.hex()) not in done.stderr + done.stdout
-    gone = run(checkout, SPARKLE_PRIVATE_KEY_FILE=str(checkout / "nowhere.key"))
+    gone = run(checkout, "--ed-key-file", str(checkout / "nowhere.key"))
     assert gone.returncode == 1 and "names no file that can be read" in gone.stderr and asked(checkout) == []
 
 
@@ -117,3 +103,53 @@ def test_only_the_public_half_of_a_key_file_is_ever_printed(checkout):
                           capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
     assert done.returncode == 0 and done.stdout.strip() == SEEDS_KEY
     assert base64.b64encode(SEED).decode() not in done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("named", ["-", "a pipe"])
+def test_a_key_that_can_be_read_only_once_is_refused_for_what_it_is(checkout, named):
+    """Sparkle's tools take "-" (standard input) or a pipe; a release reads the key three times."""
+    import os
+    if named == "a pipe":
+        named = str(checkout / "key.fifo")
+        os.mkfifo(named)
+    done = run(checkout, "--ed-key-file", named)
+    assert done.returncode == 1 and "must be a file, not \"-\" or a pipe" in done.stderr
+    assert asked(checkout) == []
+
+
+def test_a_key_that_is_there_and_could_not_be_read_is_not_called_missing(checkout):
+    """A locked keychain, or access refused or cancelled: generate_keys says so on standard
+    output, which used to be thrown away, and every failure read as "no key"."""
+    done = run(checkout, ANSWER=THE_APPS_KEY, REFUSAL="Access denied: the user cancelled the keychain prompt")
+    assert done.returncode == 1 and "no Sparkle key" not in done.stderr
+    assert "could not be had from the login keychain. generate_keys said:" in done.stderr
+    assert "    Access denied: the user cancelled the keychain prompt" in done.stderr
+
+
+def test_what_it_is_given_is_found_from_where_it_was_called(checkout):
+    """It moves to the checkout before it looks: a relative name used to be looked for there."""
+    elsewhere = checkout / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "exported.key").write_text(base64.b64encode(SEED).decode())
+    trusting(checkout, SEEDS_KEY)
+    script = str(checkout / "scripts" / SCRIPT.name)
+    env = {"PATH": "/usr/bin:/bin", "ASKED": str(checkout / "asked")}
+    by_file = subprocess.run(["/bin/bash", script, "../tools", "--ed-key-file", "exported.key"],
+                             capture_output=True, text=True, cwd=elsewhere, env=env)
+    assert by_file.returncode == 0, by_file.stderr
+    trusting(checkout, THE_APPS_KEY)
+    by_account = subprocess.run(["/bin/bash", script, "../tools", "--account", "agent-farm"],
+                                capture_output=True, text=True, cwd=elsewhere, env={**env, "ANSWER": THE_APPS_KEY})
+    assert by_account.returncode == 0, by_account.stderr
+
+
+def test_it_is_told_which_key_and_reads_no_setting_of_its_own(checkout):
+    """Which key signs is the release's to say, once; the check is handed the same arguments."""
+    done = run(checkout, ANSWER=THE_APPS_KEY, SPARKLE_ACCOUNT="someone-else",
+               SPARKLE_PRIVATE_KEY_FILE=str(checkout / "nowhere.key"))
+    assert done.returncode == 0, done.stderr
+    assert asked(checkout) == ["--account agent-farm -p"]
+    for wrong in ([], ["--account"], ["--key", "x"]):
+        bad = subprocess.run(["/bin/bash", str(checkout / "scripts" / SCRIPT.name), str(checkout / "tools"), *wrong],
+                             capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+        assert bad.returncode != 0 and "usage: check_sparkle_key.sh" in bad.stderr, wrong

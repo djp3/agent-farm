@@ -2,7 +2,27 @@
 tools, so that a script can be run for real with no keychain asked and no network reached."""
 from __future__ import annotations
 
+import base64
+import plistlib
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+with open(ROOT / "macos" / "Info.plist", "rb") as _f:
+    THE_APPS_KEY = plistlib.load(_f)["SUPublicEDKey"]
+ANOTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="        # made up: thirty-two zero bytes
+# RFC 8032's first Ed25519 test vector: a published seed and the public key it makes.
+SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+SEEDS_KEY = base64.b64encode(bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")).decode()
+
+
+def trusting(checkout: Path, key: str) -> None:
+    """The app in this scratch checkout trusts this public key."""
+    plist = checkout / "macos" / "Info.plist"
+    with open(plist, "rb") as f:
+        data = plistlib.load(f)
+    data["SUPublicEDKey"] = key
+    with open(plist, "wb") as f:
+        plistlib.dump(data, f)
 
 SIGNATURE = "hKCB3wzZctOg9isMgUzf4m8b3jGOw/B9UIjT+m92mP1SaproXMd/bntCqfIk8yU9UGeQXwNA9XcK2ztR29QgCA=="
 
@@ -37,9 +57,11 @@ def appcast(zip_signed: bool = True, feed_signed: bool = True, notes: bool = Tru
 
 
 # Sparkle's generate_keys: it notes how it was asked ($ASKED), and answers what it was told to
-# ($ANSWER), or that there is no key.
+# ($ANSWER), or fails with $REFUSAL, or says there is no key. Like the real one, it says why it
+# failed on standard output.
 GENERATE_KEYS = """#!/bin/sh
 echo "$*" >> "$ASKED"
-[ -n "${ANSWER:-}" ] || { echo "ERROR: No existing signing key found!" >&2; exit 1; }
+[ -z "${REFUSAL:-}" ] || { echo "$REFUSAL"; exit 1; }
+[ -n "${ANSWER:-}" ] || { echo "ERROR! No existing signing key found!"; exit 1; }
 echo "$ANSWER"
 """

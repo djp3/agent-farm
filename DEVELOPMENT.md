@@ -176,13 +176,16 @@ update. Sparkle compares `CFBundleVersion`, which is `VERSION`, so bump it every
 
 The script refuses to run with uncommitted changes, an existing tag or no notes file, and
 before it builds anything it checks Sparkle's tools against their pinned hashes and the
-Sparkle key against `SUPublicEDKey` (`scripts/check_sparkle_key.sh`: the keychain's by the
-`agent-farm` account, or an exported key file's public half). It builds with the Developer ID
-and `WITH_UPDATES=1`, checks the tools again, notarizes with `notarytool --wait`, staples,
-verifies with `spctl` and zips with `ditto`. `generate_appcast` then writes the appcast and
-signs the zip and the feed; `scripts/check_appcast.py` checks that both signatures and the
-notes are there, and `sign_update --verify` that the feed's signature holds. Only then does
-it tag, push the tag and create the release. Delete a bad release on GitHub and `latest`
+Sparkle key against `SUPublicEDKey` (`scripts/check_sparkle_key.sh`, handed the same
+`--account agent-farm` or `--ed-key-file <file>` the release signs with; an exported key must
+be a regular file, since the release reads it three times). It builds with the Developer ID
+and `WITH_UPDATES=1`, then checks that the copy it built carries the update feed, both signed-
+update keys and the app's Sparkle key, and checks the tools again. It notarizes with
+`notarytool --wait`, staples, verifies with `spctl` and zips with `ditto`. `generate_appcast`
+then writes the appcast and signs the zip and the feed; `scripts/check_appcast.py` checks
+that both signatures and the notes are there, and `sign_update --verify` that the feed's
+signature holds (what it says is shown when it does not). Only then does it tag, push the tag
+and create the release. Delete a bad release on GitHub and `latest`
 falls back to the previous one. `tests/test_release.py` runs the script with stand-ins for
 everything outside it.
 

@@ -7,7 +7,6 @@ published unless the zip and the feed are both signed, and nothing is built with
 is not the app's. (Ported from agent-grange-viz's, without its dry runs: every step that
 would leave this Mac is a stand-in here.)"""
 import base64
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -15,15 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from sparkle_standins import GENERATE_KEYS, appcast, shim
+from sparkle_standins import ANOTHER_KEY, GENERATE_KEYS, SEED, SEEDS_KEY, THE_APPS_KEY, appcast, shim, trusting
 
 ROOT = Path(__file__).resolve().parent.parent
-with open(ROOT / "macos" / "Info.plist", "rb") as _f:
-    THE_APPS_KEY = plistlib.load(_f)["SUPublicEDKey"]
-ANOTHER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="        # made up: thirty-two zero bytes
-# RFC 8032's first Ed25519 test vector: a published seed and the public key it makes.
-SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-SEEDS_KEY = base64.b64encode(bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")).decode()
 VERSION = "9.9.9"
 
 NOTES_A_CALL = '#!/bin/sh\necho "{name} $*" >> "$CALLS"\n'
@@ -36,13 +29,22 @@ exit 0
 """
 GH = NOTES_A_CALL.format(name="gh") + '[ "$1 $2" = "release view" ] && exit 1      # no such release yet\nexit 0\n'
 SECURITY = '#!/bin/sh\necho \'  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Developer ID Application: Made Up (TEAM123456)"\'\n'
+# scripts/build_app.sh: it notes how it was called. The app it leaves has the source's Info.plist,
+# and loses its feed unless it was asked for the copy that updates itself (WITH_UPDATES=1), as
+# the real build does; $BUILD_LOSES names keys it leaves out besides.
 BUILD = ('#!/bin/sh\necho "build_app WITH_UPDATES=${WITH_UPDATES:-} $*" >> "$CALLS"\n'
-         "mkdir -p dist/agent-farm.app/Contents\necho made-up > dist/agent-farm.app/Contents/Info.plist\n")
+         "mkdir -p dist/agent-farm.app/Contents\n"
+         "cp macos/Info.plist dist/agent-farm.app/Contents/Info.plist\n"
+         '[ "${WITH_UPDATES:-0}" = 1 ] || BUILD_LOSES="SUFeedURL ${BUILD_LOSES:-}"\n'
+         'for key in ${BUILD_LOSES:-}; do\n'
+         '    /usr/libexec/PlistBuddy -c "Delete :$key" dist/agent-farm.app/Contents/Info.plist\n'
+         "done\n")
 GENERATE_APPCAST = NOTES_A_CALL.format(name="generate_appcast") + """out=""
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out=$2; shift; done
 cp "$APPCAST" "$out"
 """
-SIGN_UPDATE = NOTES_A_CALL.format(name="sign_update") + "exit ${VERIFIES:-0}\n"
+# Sparkle's sign_update --verify: it says why it fails on standard output ($SAYS).
+SIGN_UPDATE = NOTES_A_CALL.format(name="sign_update") + '[ -z "${SAYS:-}" ] || echo "$SAYS"\nexit ${VERIFIES:-0}\n'
 # scripts/sparkle_tools.sh refuses on its $TOOLS_REFUSED_AT'th call, when that is set.
 TOOLS_OR_NOT = """n=$(grep -c '^sparkle_tools' "$CALLS")
 if [ "$n" = "${TOOLS_REFUSED_AT:-}" ]; then echo "refusing to use it" >&2; exit 1; fi
@@ -99,12 +101,7 @@ class Release:
 
     def trusting(self, key: str) -> None:
         """The checkout's app trusts this public key."""
-        plist = self.root / "macos" / "Info.plist"
-        with open(plist, "rb") as f:
-            data = plistlib.load(f)
-        data["SUPublicEDKey"] = key
-        with open(plist, "wb") as f:
-            plistlib.dump(data, f)
+        trusting(self.root, key)
 
 
 @pytest.fixture
@@ -131,6 +128,30 @@ def test_the_release_build_is_the_one_copy_that_updates_itself(release):
     release.run()
     assert release.called("build_app")[0].startswith("build_app WITH_UPDATES=1"), \
         "a copy built without it carries no feed"
+
+
+@pytest.mark.parametrize("lost, said", [
+    ("SUFeedURL", "does not carry the update feed: installed, it would never update again"),
+    ("SURequireSignedFeed", "does not set SURequireSignedFeed"),
+    ("SUVerifyUpdateBeforeExtraction", "does not set SUVerifyUpdateBeforeExtraction"),
+    ("SUPublicEDKey", "does not carry the app's Sparkle key")])
+def test_a_copy_that_would_not_update_itself_is_not_published(release, lost, said):
+    """Its appcast would be signed and verify all the same, so nothing after the build would
+    stop it: and nobody who installed that copy would ever be offered another."""
+    done = release.run(BUILD_LOSES=lost)
+    assert done.returncode == 1 and said in done.stderr, lost
+    assert release.called("build_app") and not release.called("generate_appcast")
+    assert release.nothing_left_this_mac()
+
+
+def test_a_build_that_was_not_asked_for_the_copy_that_updates_is_caught(release):
+    """Should the release ever stop saying it is one (WITH_UPDATES=1), the build leaves the
+    feed out, as it does for a copy built by hand."""
+    script = release.root / "scripts" / "release.sh"
+    script.write_text(script.read_text().replace("WITH_UPDATES=1 CODESIGN_IDENTITY=", "CODESIGN_IDENTITY="))
+    done = release.run()
+    assert done.returncode == 1 and "does not carry the update feed" in done.stderr
+    assert release.nothing_left_this_mac()
 
 
 def test_the_tools_are_checked_again_after_the_build_before_they_are_given_the_key(release):
@@ -176,9 +197,18 @@ def test_nothing_is_tagged_or_published_unless_the_zip_and_the_feed_are_both_sig
 
 
 def test_a_feed_whose_signature_does_not_verify_is_not_published(release):
-    done = release.run(VERIFIES="1")
+    done = release.run(VERIFIES="1", SAYS="Error: The signature does not match the feed")
     assert done.returncode == 1 and "the signature on appcast.xml does not verify" in done.stderr
+    assert "sign_update said:\n    Error: The signature does not match the feed" in done.stderr
     assert not (release.called("git tag") or release.called("git push") or release.called("gh release create"))
+
+
+def test_what_sign_update_says_is_shown_but_never_a_key_it_repeats(release):
+    """One of sign_update's messages repeats the key text it could not read."""
+    secret = "c2VjcmV0LWtleS1tYXRlcmlhbA=="
+    done = release.run(VERIFIES="1", SAYS=f"ERROR! Failed to decode base64 encoded key data from: {secret}")
+    assert done.returncode == 1 and "key data from: (not shown)" in done.stderr
+    assert secret not in done.stderr + done.stdout
 
 
 @pytest.mark.parametrize("answer, said", [(ANOTHER_KEY, "is not the one in macos/Info.plist"),
@@ -204,6 +234,12 @@ def test_a_key_file_named_from_where_the_script_was_called_is_still_found(releas
     assert not (release.where / "asked").exists(), "the keychain is left alone"
     gone = Release(release.where / "gone").run(SPARKLE_PRIVATE_KEY_FILE="nowhere.key")
     assert gone.returncode == 1 and "names no file that can be read" in gone.stderr
+
+
+def test_a_key_on_standard_input_is_refused_and_not_taken_for_a_file_named_dash(release):
+    done = release.run(SPARKLE_PRIVATE_KEY_FILE="-")
+    assert done.returncode == 1 and "must be a file, not \"-\" or a pipe (-)" in done.stderr
+    assert not release.called("build_app") and release.nothing_left_this_mac()
 
 
 def test_a_key_file_that_is_not_the_apps_is_found_before_anything_is_built(release):

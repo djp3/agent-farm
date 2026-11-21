@@ -168,3 +168,90 @@ def test_without_the_rpath_it_needs_the_build_stops_and_says_where_it_looked(tmp
     done = _keep_one_rpath(exe)
     assert done.returncode == 1
     assert "must look for its frameworks in @executable_path/../Frameworks alone" in done.stderr
+
+
+
+def _swift_build_step() -> str:
+    """build_app.sh's own lines that run swift build, from SWIFT_LOG= to the grep after it."""
+    build = read("scripts", "build_app.sh").splitlines()
+    first = next(i for i, line in enumerate(build) if line.startswith("SWIFT_LOG="))
+    last = next(i for i, line in enumerate(build) if line.startswith('grep -E "warning: unre|Build complete"'))
+    return "\n".join(build[first:last + 1])
+
+
+def _build_with(tmp_path, swift: str):
+    import subprocess
+    (tmp_path / "macos").mkdir()
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "swift").write_text("#!/bin/sh\n" + swift)
+    (tmp_path / "bin" / "swift").chmod(0o755)
+    script = f"set -euo pipefail\n{_swift_build_step()}\necho went-on\n"
+    return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, cwd=tmp_path,
+                          env={"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin"})
+
+
+def test_a_build_that_worked_goes_on_whatever_it_printed(tmp_path):
+    """Piped into grep under pipefail, a build that printed nothing grep knew stopped the script."""
+    done = _build_with(tmp_path, "echo 'Compiling things'\nexit 0\n")
+    assert done.returncode == 0 and "went-on" in done.stdout, done.stderr
+    assert "Compiling things" in (tmp_path / "build" / "swift-build.log").read_text()
+
+
+def test_a_build_that_failed_stops_and_shows_all_it_said(tmp_path):
+    done = _build_with(tmp_path, "echo 'main.swift:3: something the search never looked for'\nexit 1\n")
+    assert done.returncode == 1 and "went-on" not in done.stdout
+    assert "something the search never looked for" in done.stderr and "swift build failed" in done.stderr
+
+
+# A reader that may leave before its writer has finished: the writer is then cut off, the pipe
+# fails under pipefail, and in an assignment under `set -e` the script ends with nothing said.
+_LEAVES_EARLY = [
+    r"head\b",                                                                          # after its lines
+    r"grep\b[^|]*\s(-[a-zA-Z]*[qlLm]|--quiet|--silent|--max-count|--files-with)",        # at a match
+    r"sed\b[^|]*(^|[\s;'\"{])[0-9$]*q\b",                                                # at its q
+    r"awk\b[^|]*\bexit\b",                                                               # at its exit
+]
+
+
+def leaves_early(line: str) -> str:
+    """The first reader on this line of shell that may leave early, or "" when none does."""
+    import re
+    for reader in re.split(r"(?<!\|)\|(?!\|)", line)[1:]:
+        reader = reader.strip()
+        if any(re.match(pattern, reader) for pattern in _LEAVES_EARLY):
+            return reader
+    return ""
+
+
+def test_a_reader_that_may_leave_early_is_known_however_it_is_written():
+    for line in ['found=$(find . -name x | head -1)', 'first=$(list | head -n 1)',
+                 'if file -b "$f" | grep -q "Mach-O"; then', 'list | grep -m1 wanted',
+                 'list | grep --max-count=1 wanted', 'list | grep -l wanted', 'list | sed q',
+                 "list | sed -n '3q;p'", "ID=$(security find-identity | awk '/Developer ID/ {print $2; exit}')",
+                 "list | awk '{ print $2; exit }'", "a | sort | head -3"]:
+        assert leaves_early(line), line
+
+
+def test_a_reader_that_reads_to_the_end_is_left_alone():
+    for line in ['found=$(find . -name x -print -quit)', "ID=$(security find-identity | awk '/Developer ID/ && !n++ {print $2}')",
+                 'list | sort | while read -r f; do', '[ "$(shasum -a 256 "$f" | cut -d" " -f1)" = "$WANT" ]',
+                 'printf "%s\\n" "$HAVE" | sed "s/^/    /" >&2', 'case "${KEY:-}" in ""|/*|-) ;; *) KEY="$PWD/$KEY" ;; esac',
+                 'a || b', 'grep -q wanted file || exit 1', "list | grep -E 'error|warning' | tr a b",
+                 "list | sed 's/quit/q/'"]:
+        assert not leaves_early(line), line
+
+
+def test_no_pipe_in_the_scripts_can_end_one_of_them_unheard():
+    """Every pipe in every script that runs under pipefail, read for the hazard itself and
+    not for the spellings that were once there."""
+    sign = read("scripts", "sign_app.sh")
+    assert 'kind=$(file -b "$f")' in sign and 'case "$kind" in *Mach-O*) sign "$f" ;; esac' in sign
+    looked_at = 0
+    for script in sorted((ROOT / "scripts").glob("*.sh")):
+        lines = [line for line in script.read_text().splitlines() if not line.lstrip().startswith("#")]
+        if not any("pipefail" in line for line in lines):
+            continue
+        looked_at += 1
+        for line in lines:
+            assert not leaves_early(line), f"{script.name}: `{leaves_early(line)}` may leave early: {line.strip()[:90]}"
+    assert looked_at >= 5

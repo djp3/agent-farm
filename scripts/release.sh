@@ -19,10 +19,14 @@
 #     or NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY_FILE (App Store Connect API key; what CI uses)
 #   - the Sparkle key:  "$(scripts/sparkle_tools.sh)"/bin/generate_keys --account agent-farm -p
 #     or SPARKLE_PRIVATE_KEY_FILE pointing at an exported key (what CI uses)
+#     SPARKLE_PRIVATE_KEY_FILE must be a file: a release reads the key three times (to check
+#     it is the app's, to sign, to verify), so not "-" or a pipe, though Sparkle's tools take those.
 #   - gh logged in with push access to the repo
 set -euo pipefail
-# A key file named from where this was called must still be found once we have moved.
-case "${SPARKLE_PRIVATE_KEY_FILE:-}" in ""|/*) ;; *) SPARKLE_PRIVATE_KEY_FILE="$PWD/$SPARKLE_PRIVATE_KEY_FILE" ;; esac
+# A key file named from where this was called must still be found once we have moved. ("-",
+# which Sparkle's tools take for standard input, is no file's name: it is left as it is, and
+# scripts/check_sparkle_key.sh says why a release cannot use it.)
+case "${SPARKLE_PRIVATE_KEY_FILE:-}" in ""|/*|-) ;; *) SPARKLE_PRIVATE_KEY_FILE="$PWD/$SPARKLE_PRIVATE_KEY_FILE" ;; esac
 cd "$(dirname "$0")/.."
 
 VERSION=$(tr -d '[:space:]' < VERSION)
@@ -77,11 +81,29 @@ echo "identity: ${IDENTITY_NAME:-$IDENTITY} ($IDENTITY)"
 echo "sparkle tools: $TOOLS"
 # The key is not used until the appcast is written, after the build and the notary. Look at
 # it now: a missing key, or one that is not the app's, should not cost a whole run to find.
-SPARKLE_ACCOUNT="$SPARKLE_ACCOUNT" scripts/check_sparkle_key.sh "$TOOLS" || die "the Sparkle key is not usable; nothing was built"
+# It is asked about the very key the appcast will be signed with, by the arguments that name
+# it: which key is decided once, above.
+scripts/check_sparkle_key.sh "$TOOLS" "${SPARKLE_KEY_ARGS[@]}" || die "the Sparkle key is not usable; nothing was built"
 
 step "build"
 # WITH_UPDATES=1: this copy is the one that is to update itself.
 WITH_UPDATES=1 CODESIGN_IDENTITY="$IDENTITY" scripts/build_app.sh
+# What was asked for is looked for in what was built. A copy that came out without its feed
+# would pass every check that follows (its appcast is signed and verifies all the same) and
+# be published, and nobody who installed it would ever be offered another. So: the feed the
+# source names, both of the things that make the app refuse an unsigned update, and its key.
+BUILT="$APP/Contents/Info.plist"
+in_app() { /usr/libexec/PlistBuddy -c "Print :$1" "$BUILT" 2>/dev/null || true; }
+in_source() { /usr/libexec/PlistBuddy -c "Print :$1" macos/Info.plist 2>/dev/null || true; }
+[ -n "$(in_source SUFeedURL)" ] || die "macos/Info.plist names no update feed (SUFeedURL)"
+[ "$(in_app SUFeedURL)" = "$(in_source SUFeedURL)" ] \
+    || die "the copy that was built does not carry the update feed: installed, it would never update again.
+(scripts/build_app.sh leaves the feed out unless it is told WITH_UPDATES=1)"
+for key in SURequireSignedFeed SUVerifyUpdateBeforeExtraction; do
+    [ "$(in_app "$key")" = "true" ] || die "the copy that was built does not set $key: it would take an unsigned update"
+done
+[ "$(in_app SUPublicEDKey)" = "$(in_source SUPublicEDKey)" ] \
+    || die "the copy that was built does not carry the app's Sparkle key (SUPublicEDKey)"
 # The tools were checked in preflight, and the build has had SwiftPM at its packages since.
 # They are about to be handed the key: check them again, where they lie now.
 TOOLS=$(scripts/sparkle_tools.sh)
@@ -112,8 +134,14 @@ cp "$NOTES" "dist/appcast/$(basename "$ZIP" .zip).md"
 # when the app does not ask for a signed feed, and both out when the key is not the app's. A
 # search for "edSignature" finds the first and says nothing of the second.
 scripts/check_appcast.py dist/appcast/appcast.xml || die "appcast.xml is not signed as the app requires"
-"$TOOLS/bin/sign_update" --verify "${SPARKLE_KEY_ARGS[@]}" dist/appcast/appcast.xml >/dev/null \
-    || die "the signature on appcast.xml does not verify with the key it was just signed with"
+# sign_update says why on its standard output, so that is kept, and shown when it fails: a
+# keychain prompt that was refused is not a signature that is wrong. One thing it may say
+# repeats a key it could not read, and that line is never shown.
+if ! VERIFIED=$("$TOOLS/bin/sign_update" --verify "${SPARKLE_KEY_ARGS[@]}" dist/appcast/appcast.xml 2>&1); then
+    VERIFIED=$(printf '%s\n' "$VERIFIED" | sed -e 's/\(key data from:\).*/\1 (not shown)/' -e 's/^/    /')
+    die "the signature on appcast.xml does not verify with the key it was just signed with. sign_update said:
+$VERIFIED"
+fi
 { cat "$NOTES"; printf '%s\n' "$NOTES_SUFFIX"; } > dist/release-notes.md
 
 step "publish $TAG"
