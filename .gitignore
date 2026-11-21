@@ -10,6 +10,7 @@ logs/
 # per-user choices made in the Settings panel
 settings.json
 monitor_settings.json
+grange-history.json
 
 # editor / OS noise
 .DS_Store

@@ -252,7 +252,7 @@ def test_two_columns_with_the_expiring_pane_over_the_detail_pane_and_the_farm_ch
         left, usage_col = app.query_one("#left"), app.query_one("#usage")
         assert [w.id for w in left.children] == ["fleet", "tree", "expiring", "detail"]
         assert [w.id for w in usage_col.children] == ["charts", "usage-scroll"]
-        assert [w.id for w in app.query_one("#charts").children] == ["farm", "projects"]
+        assert [w.id for w in app.query_one("#charts").children] == ["farm", "grange-chart", "projects"]
         pane, farm = app.query_one("#expiring"), app.query_one("#farm")
         assert pane.outer_size.height == main.BOTTOM_ROWS and pane.region.bottom == app.query_one("#detail").region.y
         assert app.query_one("#detail").region.bottom == left.region.bottom
