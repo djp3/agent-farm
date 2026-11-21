@@ -397,13 +397,16 @@ class History:
     spans [start, end, kind] in wall-clock seconds, kind being a Reply.kind. An answered push
     covers the HEARTBEAT_S after it, when the next one is due. A push within two heartbeats
     of the last continues its span when the answer is of the same kind, and ends it and starts
-    the next when not; a longer gap (the monitor quit, the Mac slept) starts a new one. Only
-    times and kinds are kept: no session names, no counts, no owner. The file is JSON beside
-    the settings, holding a day; None keeps it in memory only."""
+    the next when not; a longer gap (the monitor quit, the Mac slept) starts a new one, and so
+    does any push after reporting was turned off (stopped()), however soon: `closed` says the
+    last span was ended that way. A restart is not an end, so a span carries on across one.
+    Only times and kinds are kept: no session names, no counts, no owner. The file is JSON
+    beside the settings, holding a day; None keeps it in memory only."""
 
     def __init__(self, path: Path | None) -> None:
         self.path = path
         self.spans: list[list] = []
+        self.closed = False                  # the last span was ended by turning reporting off
         self._saved_at = float("-inf")
         self._unsaved = False
         self._load()
@@ -425,30 +428,39 @@ class History:
                     and sp[0] <= sp[1]):
                 self.spans.append([float(sp[0]), float(sp[1]), sp[2]])
         self.spans.sort(key=lambda sp: sp[0])
-        self._prune(time.time())
+        self.closed = data.get("closed") is True
+        self._unsaved = self._prune(time.time())     # the file loses them at its next save too
 
     def answered(self, now: float, kind: str) -> bool:
         """A push made while reporting was on got this answer. True when a span began or ended,
         which the chart shows; a span that only grows is left to its regular redraw."""
         last = self.spans[-1] if self.spans else None
-        if last is not None and last[0] <= now <= last[1] + HEARTBEAT_S:
+        if last is not None and not self.closed and last[0] <= now <= last[1] + HEARTBEAT_S:
             if last[2] == kind:
                 last[1] = now + HEARTBEAT_S
+                self._prune(now)                 # a span can grow for days: what it outlives goes
                 self._save(now)
                 return False
             last[1] = now
         self.spans.append([now, now + HEARTBEAT_S, kind])
+        self.closed = False
         self._prune(now)
         self._save(now, force=True)
         return True
 
     def stopped(self, now: float) -> bool:
-        """Reporting is off, or nothing can be sent: the span still running ends now. True when
-        one did."""
+        """Reporting is off, or nothing can be sent: the last span ends now, if it has not
+        already, and is closed, so that the next push starts a new one however soon it comes.
+        True the first time, when the chart may change."""
         last = self.spans[-1] if self.spans else None
-        if last is None or last[1] <= now:
+        if last is None or self.closed:
+            # Called every snapshot while reporting is off: the day goes on passing, and what
+            # falls out of it goes, from the file too, at the throttle's pace.
+            if self._prune(now) or self._unsaved:
+                self._save(now)
             return False
-        last[1] = max(last[0], now)
+        last[1] = max(last[0], min(last[1], now))   # a heartbeat a little late has already run out
+        self.closed = True
         self._save(now, force=True)
         return True
 
@@ -457,8 +469,12 @@ class History:
         if self._unsaved:
             self._save(time.time(), force=True)
 
-    def _prune(self, now: float) -> None:
-        self.spans = [sp for sp in self.spans if sp[1] > now - HISTORY_KEEP_S]
+    def _prune(self, now: float) -> bool:
+        """Drop the spans that ended more than HISTORY_KEEP_S ago. True when any did."""
+        kept = [sp for sp in self.spans if sp[1] > now - HISTORY_KEEP_S]
+        dropped = len(kept) < len(self.spans)
+        self.spans = kept
+        return dropped
 
     def _save(self, now: float, force: bool = False) -> None:
         if self.path is None:
@@ -469,7 +485,8 @@ class History:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"spans": [[round(a), round(b), k] for a, b, k in self.spans]}) + "\n")
+            tmp.write_text(json.dumps({"spans": [[round(a), round(b), k] for a, b, k in self.spans],
+                                       "closed": self.closed}) + "\n")
             os.replace(tmp, self.path)
             self._saved_at, self._unsaved = now, False
         except OSError as e:
