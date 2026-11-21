@@ -128,6 +128,23 @@ def test_no_login_when_gh_has_none_for_github_com_or_it_is_not_a_login(tmp_path)
     assert grange.gh_login() == ""
 
 
+def test_an_enterprise_managed_users_login_is_a_login(tmp_path):
+    """Their logins are handle_shortcode: refused, their sessions were never reported."""
+    for login in ("mira_acme", "mira-dev_acme", "octo-cat", "a", "a" * 39):
+        assert grange.LOGIN.fullmatch(login), login
+    for wrong in ("_mira", "mira_", "mira__acme", "mira-_acme", "mira acme", "mira.acme", "a" * 40, ""):
+        assert not grange.LOGIN.fullmatch(wrong), wrong
+    _hosts(tmp_path, "github.com:\n    user: mira_acme\n")
+    assert grange.gh_login() == "mira_acme"
+
+
+def test_an_enterprise_managed_users_login_is_kept_in_the_settings(tmp_path, monkeypatch):
+    p = tmp_path / "settings.json"
+    monkeypatch.setenv("AGENT_FARM_SETTINGS", str(p))
+    p.write_text(json.dumps({"grange_owner": "mira_acme"}))
+    assert Settings.load().grange_owner == "mira_acme"
+
+
 # ---- the wire ------------------------------------------------------------------------
 
 class Grange:

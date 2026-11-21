@@ -66,8 +66,10 @@ REPLY_MAX = 64 * 1024   # bytes of an answer read, for its {"error": ...}
 KINDS = ("accepted", "out of date", "not running", "no answer", "refused")   # Reply.kind
 HISTORY_KEEP_S = 25 * 3600   # the chart's day, and an hour to spare
 HISTORY_SAVE_S = 60.0        # a span that only grows is saved at most this often
-# A GitHub login: letters, digits and single hyphens, not at either end, at most 39 characters.
-LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
+# A GitHub login: letters, digits and single hyphens or underscores, not at either end, at most
+# 39 characters. The underscore is for Enterprise Managed Users, whose logins are
+# handle_shortcode (mira_acme); refused, their sessions could never be reported.
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|[-_](?=[A-Za-z0-9])){0,38}")
 
 log = logging.getLogger("agent_farm.grange")
 

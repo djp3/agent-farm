@@ -1708,7 +1708,7 @@ class SettingsScreen(Screen):
         self._owner_note = None
         if login and not grange.LOGIN.fullmatch(login):
             self._owner_note = Text(f"{login!r} is not a GitHub login (letters, digits and single "
-                                    "hyphens, at most 39), so it was not saved.", style=RED)
+                                    "hyphens or underscores, at most 39), so it was not saved.", style=RED)
         elif login != self.settings.grange_owner:
             self.settings.grange_owner = login
             self._changed()
