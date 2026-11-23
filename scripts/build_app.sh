@@ -1,11 +1,15 @@
 #!/bin/bash
 # Build dist/agent-farm.app from a checkout:
-#   1. PyInstaller onedir of main.py            -> dist/python/agent-farm-core
-#   2. SwiftPM release build of the host app     -> macos/.build/release/AgentFarm
-#   3. assemble the bundle (binary, Sparkle.framework, the Python tree, icon, Info.plist)
-#   4. check the minimum macOS (scripts/check_min_macos.py): stop if a binary needs more
+#   1. check that .venv has every library requirements.txt and requirements-build.txt pin,
+#      at its version (scripts/check_requirements.py): PyInstaller only warns about one it
+#      cannot find, and builds an app that fails on its first import
+#   2. PyInstaller onedir of main.py            -> dist/python/agent-farm-core
+#   3. start that core once, with --help: stop if it cannot, before an app is made around it
+#   4. SwiftPM release build of the host app     -> macos/.build/release/AgentFarm
+#   5. assemble the bundle (binary, Sparkle.framework, the Python tree, icon, Info.plist)
+#   6. check the minimum macOS (scripts/check_min_macos.py): stop if a binary needs more
 #      than Info.plist declares, or the Swift executable records a different minimum
-#   5. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
+#   7. sign it: ad-hoc by default, or with CODESIGN_IDENTITY="Developer ID Application: ..."
 # Only a release (WITH_UPDATES=1, which scripts/release.sh sets) carries the update feed: a
 # copy built by hand never looks for updates, so it never replaces itself with a release.
 # Needs: .venv with requirements.txt + requirements-build.txt, Xcode command line tools.
@@ -28,13 +32,31 @@ IDENTITY=${IDENTITY:--}
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
-if [ "${SKIP_PYTHON:-0}" = 1 ] && [ -x dist/python/agent-farm-core/agent-farm-core ]; then
-    step "python core: reusing dist/python/agent-farm-core (SKIP_PYTHON=1)"
+CORE=dist/python/agent-farm-core/agent-farm-core
+if [ "${SKIP_PYTHON:-0}" = 1 ] && [ -x "$CORE" ]; then
+    step "python core: reusing $CORE (SKIP_PYTHON=1)"
 else
+    if [ ! -x "$PY" ]; then
+        echo "no Python at $PY: make the one the build uses, with what it needs, by" >&2
+        echo "    python3.14 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-build.txt" >&2
+        exit 1
+    fi
     step "python core: PyInstaller onedir ($($PY --version))"
+    # PyInstaller packs the libraries it finds in this Python. One it cannot find it only
+    # warns about, and the app it builds fails on its first import: so they are looked for first.
+    $PY scripts/check_requirements.py requirements.txt requirements-build.txt
     $PY -m PyInstaller --noconfirm --clean --log-level WARN \
         --distpath dist/python --workpath build/pyinstaller packaging/agent-farm-core.spec
 fi
+# Whether it was built just now or reused, the core is started once before an app is made
+# around it. --help loads everything main.py imports and exits before the monitor begins:
+# it writes no log and reads no settings, and fails as the app would on a missing library.
+if ! CORE_SAYS=$("$CORE" --help 2>&1); then
+    printf '%s\n' "$CORE_SAYS" | sed 's/^/    /' >&2
+    echo "the Python core in $CORE cannot start (what it said is above), so no app was built around it" >&2
+    exit 1
+fi
+echo "$CORE starts"
 
 step "host app: swift build"
 BIN=macos/.build/release/AgentFarm
