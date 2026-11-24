@@ -75,8 +75,11 @@ Steps, all in that script:
 
 1. **Check the libraries** with `scripts/check_requirements.py`: every pin in
    `requirements.txt` and `requirements-build.txt` must be installed in `.venv` at its
-   version, and every line of both must be an exact pin (`name==version`), so none goes
-   unchecked. Without a `.venv` at all the build says how to make one.
+   version, and every line of both must be an exact pin of a release (`name==1.2.3`), so none
+   goes unchecked. Versions compare as pip compares releases (`1.02` is `1.2`); a pin of a
+   pre-, post- or dev release, a local label or an epoch is refused, since pip's rules for those
+   live in the `packaging` library, which the check cannot count on before it has looked.
+   Without a `.venv` at all the build says how to make one.
 2. **PyInstaller onedir** of `main.py` from `packaging/agent-farm-core.spec` into
    `dist/python/agent-farm-core/`. Textual and Rich are collected whole; watchdog is excluded.
 3. **Start the core once**, with `--help`, which loads everything `main.py` imports and
