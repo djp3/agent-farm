@@ -520,7 +520,7 @@ def fleet_line(instances: list[Instance], show_text: bool,
                  + (f"{shell} waiting on a shell · " if shell else "") + f"{running} agents running")
     if not it2_ok:
         t.append("  ")
-        t.append("it2 missing — focus (f) unavailable", style=RED)
+        t.append("it2 missing — open (o) unavailable", style=RED)
     if error_count:                      # recent problems only; the tooltip has the total
         t.append("  ")
         t.append(f"⚠ {error_count} (see the log)", style=RED)
@@ -558,7 +558,7 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     if grange_words:
         lines.append(f"agent-grange: {grange_words}")
     if not it2_ok:
-        lines.append("iTerm2's it2 CLI was not found, so the f key cannot focus tabs")
+        lines.append("iTerm2's it2 CLI was not found, so the o key cannot open tabs")
     if error_count:
         lines.append(f"{error_count} warning{'s' if error_count != 1 else ''} in the last {ERROR_WINDOW_S // 60} minutes "
                      f"({errors.count} since launch) — details in the log (Monitor ▸ Open Log Folder)")
@@ -1903,7 +1903,7 @@ class AgentFarm(App):
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("f", "focus_tab", "Bring forward"),
+        Binding("o", "focus_tab", "Open"),         # o for open, as in the other agent-* apps
         Binding("d", "toggle_detail", "Detail"),
         Binding("u", "toggle_usage", "Usage"),
         Binding("p", "toggle_projects", "Projects"),

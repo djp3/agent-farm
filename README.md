@@ -15,7 +15,7 @@ Apple silicon · free and open source
 ### The agent that needs you is always on top
 
 Every session in iTerm2 and the Claude desktop app lands on one list, with whoever has waited
-longest first. Pick one, press `f`, and you're in its tab (this is surprisingly great). One
+longest first. Pick one, press `o`, and you're in its tab (this is surprisingly great). One
 🐓 per session in the title bar for any agent that's busy or waiting.
 
 ### The whole team at a glance
@@ -79,7 +79,7 @@ You may be asked for a few permissions along the way, all optional:
 - **Files and Folders** (Documents, Desktop and similar) lets agent-farm find the git
   repository of sessions working in those folders.
 - **iTerm2 access**, the first time agent-farm connects to it, lets agent-farm tell which
-  tab each session is in and lets `f` bring it forward.
+  tab each session is in and lets `o` open it.
 - **Keychain access**, only if you turn on plan limits. See [The usage panel](#the-usage-panel).
 
 ## The window
@@ -115,7 +115,7 @@ you.
 | enter / space | fold or unfold the row's subagents and shells |
 | tab | move between the tree and the expiring pane |
 | k | in the expiring pane: keep the selected session another 30 days |
-| f | bring that session forward: its iTerm2 tab, or the Claude desktop app |
+| o | open that session: bring its iTerm2 tab, or the Claude desktop app, forward |
 | d | show / hide the detail pane (it hides itself when the window is short) |
 | u | show / hide the usage graph |
 | p | show / hide the project graph (with both graphs hidden the right column closes) |
@@ -195,7 +195,7 @@ From left to right:
 - **The counts in words** (`6 sessions · 2 busy · 1 waiting · 3 agents running`), only with
   **Show status text in rows** on.
 - **Two red notes, only when something is wrong**: `it2 missing` when agent-farm has no way
-  to reach iTerm2 at all (the `f` key needs it), and `⚠ N` for warnings logged in the last
+  to reach iTerm2 at all (the `o` key needs it), and `⚠ N` for warnings logged in the last
   ten minutes.
 
 ### The detail pane
@@ -453,7 +453,7 @@ are kept for this, in `grange-history.json` beside the settings file, and only f
 | log | `~/Library/Logs/agent-farm/agent-farm.log` |
 
 Errors stay in the log. On screen there is only the fleet line's `⚠ N` badge, and a short
-note when `f` fails. **Monitor ▸ Open Log Folder** opens the folder holding the log, which
+note when `o` fails. **Monitor ▸ Open Log Folder** opens the folder holding the log, which
 records failed focus attempts and why, unreadable registry files, malformed transcript rows
 and any crash. If the monitor inside the window ever stops, the window says so and
 **Monitor ▸ Restart Monitor** (⌘R) starts it again.
