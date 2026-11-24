@@ -51,8 +51,14 @@ The tests in `tests/` are plain pytest; the ones that drive the UI use Textual's
 
 ## Building the app
 
-    .venv/bin/pip install -r requirements-build.txt     # PyInstaller and pip-tools
+    python3.14 -m venv .venv                              # once, if "Running from source" did not
+    .venv/bin/pip install -r requirements.txt -r requirements-build.txt   # the app's libraries, and PyInstaller and pip-tools
     scripts/build_app.sh                                  # -> dist/agent-farm.app
+
+Both files go into the same `.venv`: PyInstaller packs the app's libraries from the Python it
+runs in. Left to itself it only warns about one it cannot find, and builds an app that fails
+as it opens (`No module named 'rich'`), so the build checks for them first and stops,
+naming what is missing and the `pip install` line that installs it.
 
 Dependencies are pinned exactly in `requirements.txt` and `requirements-build.txt`, and
 `requirements.lock` lists every package, indirect ones included, with the hashes of their
@@ -67,11 +73,22 @@ to move them all to their latest versions too:
 
 Steps, all in that script:
 
-1. **PyInstaller onedir** of `main.py` from `packaging/agent-farm-core.spec` into
+1. **Check the libraries** with `scripts/check_requirements.py`: every pin in
+   `requirements.txt` and `requirements-build.txt` must be installed in `.venv` at its
+   version, and every line of both must be an exact pin of a release (`name==1.2.3`), so none
+   goes unchecked. Versions compare as pip compares releases (`1.02` is `1.2`); a pin of a
+   pre-, post- or dev release, a local label or an epoch is refused, since pip's rules for those
+   live in the `packaging` library, which the check cannot count on before it has looked.
+   Without a `.venv` at all the build says how to make one.
+2. **PyInstaller onedir** of `main.py` from `packaging/agent-farm-core.spec` into
    `dist/python/agent-farm-core/`. Textual and Rich are collected whole; watchdog is excluded.
-2. **`swift build -c release`** in `macos/`. SwiftTerm is linked statically; Sparkle comes
+3. **Start the core once**, with `--help`, which loads everything `main.py` imports and
+   exits before the monitor begins (no log, no settings, nothing written). The build stops,
+   showing what the core said, if it cannot start; a core reused with `SKIP_PYTHON=1` is
+   started too.
+4. **`swift build -c release`** in `macos/`. SwiftTerm is linked statically; Sparkle comes
    as a binary framework that SwiftPM downloads into `macos/.build/artifacts`.
-3. **Assemble** `dist/agent-farm.app`: the Swift binary, `Sparkle.framework`, the Python
+5. **Assemble** `dist/agent-farm.app`: the Swift binary, `Sparkle.framework`, the Python
    tree under `Contents/Resources/agent-farm-core`, the icon (Noto Emoji's 3D rooster from
    `macos/Resources/rooster.png`, drawn by `scripts/make_icon.swift` whenever the script or
    the image is newer than the cached `AppIcon.icns`; never Apple's emoji artwork, which is
@@ -79,7 +96,7 @@ Steps, all in that script:
    (from the packages SwiftPM fetched, as `LICENSE-Sparkle` and `LICENSE-SwiftTerm` beside
    the app's own; the build stops without them), and `Info.plist` with `VERSION` filled in for both
    `CFBundleShortVersionString` and `CFBundleVersion`.
-4. **Check the minimum macOS** with `scripts/check_min_macos.py`. It reads each binary's
+6. **Check the minimum macOS** with `scripts/check_min_macos.py`. It reads each binary's
    Mach-O header itself (no otool, standard library only) and counts only the Apple-silicon
    slices. The build stops if:
    - any binary needs a newer macOS than `LSMinimumSystemVersion` declares;
@@ -88,7 +105,7 @@ Steps, all in that script:
      `Info.plist` must agree).
    
    agent-frolic runs the same check.
-5. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
+7. **Sign** with `scripts/sign_app.sh`, inside-out: every Mach-O in the Python tree, the
    nested `Python.framework`, the entry executable with `packaging/python.entitlements`,
    Sparkle's helpers the way Sparkle's own instructions re-sign them (only `Downloader.xpc`
    keeps the entitlements it ships with; never `--deep`), its framework, then the app. The
