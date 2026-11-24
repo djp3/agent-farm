@@ -565,11 +565,20 @@ def fleet_tooltip(instances: list[Instance], ordering: Ordering, error_count: in
     return "\n".join(lines)
 
 
+NAME_TAIL_MIN = 6        # what a cut name keeps of its end at the least: room for "pr-112"
+
+
 def _fit_name(name: str, width: int) -> str:
+    """The name in a field `width` wide. One too long keeps its start and its end and gives up
+    its middle (acme-pasture-…-fixes-pr-87): names often end in what tells them apart, such as
+    a PR number. The end gets half the field, and never less than NAME_TAIL_MIN while the
+    start keeps a character of its own."""
     if width <= 0:
         return name
     if len(name) > width:
-        return name[: width - 1] + "…"
+        keep = width - 1                                  # all but the "…"
+        tail = max(keep // 2, min(NAME_TAIL_MIN, keep - 1))
+        return name[:keep - tail] + "…" + name[len(name) - tail:]
     return name.ljust(width)
 
 

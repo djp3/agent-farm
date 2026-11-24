@@ -268,6 +268,9 @@ The alternatives, chosen in Settings, are **activity** (most recent transcript e
 - **Usage graph open at launch** (off).
 - **Project graph open at launch** (off).
 - **Align activity text** (on): pad names to a fixed column so the activity text lines up.
+  A name too long for the column keeps its start and its end and gives up its middle
+  (`acme-pasture-…-fixes-pr-87`), so a PR number at the end stays in sight; the detail pane
+  shows it whole.
 - **Plan limits in the usage panel** (off): the `/usage` windows, fetched with your Claude
   Code sign-in. See the usage panel section for what that involves.
 - **Expiring pane** (on): the sessions Claude Code deletes next, with their keep buttons.
