@@ -9,13 +9,17 @@ and goes on building. The app that comes of it fails on its first import ("No mo
 'rich'"), on the Mac of whoever opens it. A checkout whose .venv has the build's requirements
 and not the app's builds exactly that.
 
-Every line of each file must be an exact pin (name==version), with comments and blank lines
-allowed: a line the check could not read would be a library it never looked at. Names compare
-the way pip compares them (case, "-", "_" and "." alike).
+Every line of each file must be an exact pin of a release (name==1.2.3), with comments and
+blank lines allowed: a line the check could not read would be a library it never looked at.
+Names compare the way pip compares them (case, "-", "_" and "." alike), and so do versions, as
+far as the check reads them: release numbers compare as numbers (1.02 is 1.2, and 1.2.0 is too),
+and a local label on what is installed (1.2+local) is left out, as a pin without one takes any.
+A pin of anything else (a pre-, post- or dev release, a local label, an epoch) is refused rather
+than half-understood: pip's full rules live in the packaging library, which this cannot count on.
 
 It needs nothing but Python's standard library. Exit 0 when every pin is installed at its
 version, 1 naming each one that is missing or at another version and the pip line that installs
-them, 2 when a file cannot be read or holds a line that is not an exact pin.
+them, 2 when a file cannot be read or holds a line that is not an exact pin of a release.
 """
 from __future__ import annotations
 
@@ -24,7 +28,11 @@ import re
 import sys
 from importlib import metadata
 
-PIN = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==([0-9][A-Za-z0-9.+!-]*)")
+NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+RELEASE = r"[0-9]+(?:\.[0-9]+)*"
+PIN = re.compile(rf"({NAME})==({RELEASE})")
+ANY_PIN = re.compile(rf"({NAME})==(\S+)")
+INSTALLED = re.compile(rf"({RELEASE})(?:\+[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)?")
 
 
 class Unreadable(Exception):
@@ -45,15 +53,23 @@ def pins(path: str) -> list[tuple[str, str]]:
             continue
         m = PIN.fullmatch(line)
         if not m:
+            if ANY_PIN.fullmatch(line):
+                raise Unreadable(f"{path}:{n}: the check reads only release numbers like 1.2.3 (no pre-, post- or "
+                                 f"dev release, local label or epoch), so this pin would go unchecked: {line}")
             raise Unreadable(f"{path}:{n}: not an exact pin (name==version), so it would go unchecked: {line}")
         found.append((m.group(1), m.group(2)))
     return found
 
 
-def _release(version: str) -> tuple:
-    """1.2 and 1.2.0 are one version to pip; 1.2 and 1.20 are not."""
-    parts = version.split(".")
-    while len(parts) > 1 and parts[-1] == "0":
+def _release(version: str) -> tuple[int, ...] | None:
+    """A release's numbers as pip compares them: 1.02 is 1.2, 1.2.0 is 1.2, and 1.20 is not.
+    A local label (1.2+local) is left out, since a pin without one takes any. None for anything
+    that is not a release (1.2rc1, 1.2.post1, 1!1.2), which no pin the check reads matches."""
+    m = INSTALLED.fullmatch(version)
+    if not m:
+        return None
+    parts = [int(p) for p in m.group(1).split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
         parts.pop()
     return tuple(parts)
 

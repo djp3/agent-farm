@@ -69,6 +69,42 @@ def test_a_library_at_another_version_stops_it_too(tmp_path, site):
     assert "-m pip install -r requirements.txt -r requirements-build.txt" in done.stderr
 
 
+def test_release_numbers_compare_as_numbers_the_way_pip_compares_them():
+    release = check_requirements._release
+    assert release("1.02") == release("1.2") == release("1.2.0") == release("1.2+local.3")
+    assert release("1.2") != release("1.20")
+    for not_a_release in ("1.2rc1", "1.2-rc1", "1.2.post1", "1.2.dev0", "1!1.2", "v1.2", "1.2+"):
+        assert release(not_a_release) is None, not_a_release
+
+
+def test_an_equal_release_written_another_way_passes(tmp_path):
+    """pip takes 1.02 for 1.2, and 1.2+local for a pin of 1.2 (a pin with no local label takes any)."""
+    site = tmp_path / "site"
+    _installed(site, "gizmo", "1.2")
+    _installed(site, "sprocket", "1.2+local.3")
+    done = _check(tmp_path, site, {"requirements.txt": "gizmo==1.02\nsprocket==1.2\n"})
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("installed", ["1.2rc1", "1.2.post1", "1.2.dev0", "1!1.2"])
+def test_a_pre_post_or_dev_release_installed_is_not_the_release_pinned(tmp_path, installed):
+    site = tmp_path / "site"
+    _installed(site, "gizmo", installed)
+    done = _check(tmp_path, site, {"requirements.txt": "gizmo==1.2\n"})
+    assert done.returncode == 1
+    assert f"gizmo is {installed}, and requirements.txt pins 1.2" in done.stderr
+
+
+@pytest.mark.parametrize("version", ["1.0+build", "1.0rc1", "1.0-rc1", "1.0.post1", "1.0.dev2", "1!1.0"])
+def test_a_pin_of_anything_but_a_release_is_refused_not_half_understood(tmp_path, site, version):
+    """1.0+build and 1.0+build.0 are different builds, 1.0rc1 and 1.0-rc1 one pre-release: pip's
+    rules for those live in the packaging library, so the check refuses them rather than guess."""
+    done = _check(tmp_path, site, {"requirements.txt": f"widget-kit==3.0\ngizmo=={version}\n"})
+    assert done.returncode == 2
+    assert "requirements.txt:2: the check reads only release numbers like 1.2.3" in done.stderr
+    assert f"so this pin would go unchecked: gizmo=={version}" in done.stderr
+
+
 @pytest.mark.parametrize("line", ["frobnicate>=1.2", "frobnicate", "-r other.txt", "frobnicate==1.2; sys_platform == 'darwin'"])
 def test_a_line_it_cannot_read_as_an_exact_pin_is_refused_not_skipped(tmp_path, site, line):
     done = _check(tmp_path, site, {"requirements.txt": f"widget-kit==3.0\n{line}\n"})
